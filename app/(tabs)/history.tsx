@@ -1,11 +1,11 @@
 // ──────────────────────────────────────────────────────────────────────
 // app/(tabs)/history.tsx
 // ──────────────────────────────────────────────────────────────────────
-import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, SectionList, Animated, TouchableOpacity } from 'react-native';
-import { Text, Button, Divider, IconButton } from 'react-native-paper';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Sharing from 'expo-sharing';
+import React, { useEffect, useState } from 'react';
+import { Animated, SectionList, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Button, Divider, IconButton, Text } from 'react-native-paper';
 
 type Order = {
   id: string;
@@ -31,7 +31,9 @@ export default function HistoryScreen() {
   // ────── Safe Date Parser (prevents Jan 1970) ──────
   const parseDate = (s?: string): Date => {
     if (!s) return new Date();
-    const parts = s.split(' at ');
+    const clean = s.replace(/\u202F/g, " ").replace(/\u00A0/g, " ");
+const parts = clean.split(" at ");
+
     if (parts.length !== 2) return new Date();
     const [datePart, timePart] = parts;
     const nums = datePart.split('/').map(Number);
@@ -113,6 +115,7 @@ export default function HistoryScreen() {
 
   // ────── Toggle Expand ──────
   const toggleExpand = (id: string) => {
+
     setExpanded(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -120,6 +123,30 @@ export default function HistoryScreen() {
       return next;
     });
   };
+
+  // DELETE ORDER
+const deleteOrder = async (orderId: string) => {
+  try {
+    const raw = await AsyncStorage.getItem("orders");
+    if (!raw) return;
+
+    let orders = JSON.parse(raw);
+    orders = orders.filter((o: Order) => o.id !== orderId);
+    await AsyncStorage.setItem("orders", JSON.stringify(orders));
+
+    setSections(prev =>
+      prev
+        .map(sec => ({
+          ...sec,
+          data: sec.data.filter(o => o.id !== orderId),
+          count: sec.data.filter(o => o.id !== orderId).length,
+        }))
+        .filter(sec => sec.count > 0)
+    );
+  } catch (e) {
+    console.error("Delete failed:", e);
+  }
+};
 
   // ────── Share ONLY the PDF (no WhatsApp message) ──────
   const sharePDF = async (pdfUri: string) => {
@@ -197,6 +224,18 @@ export default function HistoryScreen() {
                   >
                     Share PDF
                   </Button>
+
+                  <Button
+  mode="outlined"
+  icon="delete"
+  onPress={() => deleteOrder(item.id)}
+  style={[styles.shareBtn, { borderColor: "#ff0000" }]}
+  textColor="#ff0000"
+  contentStyle={{ height: 44 }}
+>
+  Delete Order
+</Button>
+
                 </Animated.View>
               )}
             </View>
