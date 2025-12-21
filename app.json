@@ -7,30 +7,26 @@
     "scheme": "bbn",
     "icon": "./assets/images/bbn_logo.png",
     "userInterfaceStyle": "automatic",
-
     "ios": {
       "supportsTablet": true
     },
-
     "android": {
       "package": "com.abhinav7603.bbn",
       "icon": "./assets/images/bbn_logo.png",
-
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/bbn_logo.png",
         "backgroundColor": "#FFFFFF"
       },
-
       "permissions": [
         "INTERNET",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
         "READ_MEDIA_IMAGES",
         "READ_MEDIA_VIDEO",
         "READ_MEDIA_AUDIO"
       ],
-
       "allowBackup": false
     },
-
     "plugins": [
       "expo-router",
       [
@@ -41,13 +37,13 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-sqlite",
+      "expo-web-browser"
     ],
-
     "web": {
       "favicon": "./assets/images/favicon.png"
     },
-
     "extra": {
       "router": {},
       "eas": {

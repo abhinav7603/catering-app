@@ -5,9 +5,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Asset } from "expo-asset";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
+import { Platform } from "react-native";
+import { Alert } from "react-native";
+
+import { getNextQuotationNumber } from "../../services/cloud";
+
 import {
   KeyboardAvoidingView,
   Linking,
@@ -16,6 +21,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
+import {
+  saveOrderToCloud,
+  loadOrdersFromCloud,
+  deleteOrderFromCloud
+} from "../../services/cloud";
 
 import {
   Button,
@@ -56,16 +67,6 @@ async function transliterateWord(word) {
   }
 }
 
-// FIX broken spaced Hindi letters (like "गु ला ब जा मु न")
-function normalizeHindiSpacing(line) {
-  return line.replace(/([\u0900-\u097F])\s+([\u0900-\u097F])/g, "$1$2");
-}
-
-function normalizeHindiUnicode(str) {
-  return str.normalize("NFC");
-}
-
-
 async function transliterateLine(line) {
   const words = line.trim().split(/\s+/);
   let out = [];
@@ -77,26 +78,37 @@ async function transliterateLine(line) {
   return out.join(" ");
 }
 
-// --- HINDI → ENGLISH (Latin) Online Transliteration ---
-async function hindiToEnglishOnline(text) {
-  try {
-    const url =
-      "https://api.sanskritcloud.com/api/transliterate?" +
-      "text=" + encodeURIComponent(text) +
-      "&from=hi&to=eng";
+// ─── WORKSHOP SAFE TRANSLITERATION ─────────────────────────────
 
-    const response = await fetch(url);
-    const raw = await response.text();  // API returns PLAIN TEXT
+const UNITS = [
+  "kg", "kgs", "gm", "g", "mg",
+  "ltr", "l", "ml",
+  "pcs", "pc", "piece", "pieces",
+  "plate", "plates"
+];
 
-    if (!raw) return text;
-
-    return raw.trim();  // "गुलाब जामुन" → "gulab jamun"
-  } catch (e) {
-    console.log("Hindi → Eng transliteration failed:", e);
-    return text;
-  }
+function isNumberOrUnit(word: string) {
+  if (/^[0-9./]+$/.test(word)) return true;
+  if (UNITS.includes(word.toLowerCase().replace(/[^a-z]/g, ""))) return true;
+  return false;
 }
 
+async function smartTransliterateLine(line: string) {
+  const words = line.trim().split(/\s+/);
+  let out: string[] = [];
+
+  for (const w of words) {
+    if (isNumberOrUnit(w)) {
+      out.push(w);
+    } else {
+      out.push(await transliterateWord(w));
+    }
+  }
+
+  return out.join(" ");
+}
+
+const getCurrentYear = () => new Date().getFullYear();
 
 // ─── TYPES ─────────────────────────────────────────────
 
@@ -115,6 +127,66 @@ type OrderBlock = {
   date: Date;
   time: Date;
 };
+
+function mergeOrders(localOrders: any[], cloudOrders: any[]) {
+  const map = new Map();
+
+  // local pehle
+  localOrders.forEach((o) => {
+    map.set(o.id, o);
+  });
+
+  // cloud overwrite karega
+  cloudOrders.forEach((o) => {
+    map.set(o.id, o);
+  });
+
+  // latest first (dateTime ke basis pe)
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()
+  );
+}
+
+
+const sharePdfSafely = async (sourceUri: string) => {
+  try {
+    const info = await FileSystem.getInfoAsync(sourceUri);
+    console.log("📄 SOURCE:", sourceUri, info);
+
+    if (!info.exists) {
+      Alert.alert("PDF not found", sourceUri);
+      return;
+    }
+
+    if (!(await Sharing.isAvailableAsync())) {
+      Alert.alert("Sharing not available on this device");
+      return;
+    }
+
+    const tempUri =
+      FileSystem.cacheDirectory + `share_${Date.now()}.pdf`;
+
+    await FileSystem.copyAsync({
+      from: sourceUri,
+      to: tempUri,
+    });
+
+    const tempInfo = await FileSystem.getInfoAsync(tempUri);
+    console.log("📄 TEMP:", tempInfo);
+
+    await Sharing.shareAsync(tempUri, {
+      mimeType: "application/pdf",
+      dialogTitle: "Share PDF",
+    });
+  } catch (e: any) {
+    console.log("❌ SHARE ERROR:", e);
+    Alert.alert(
+      "Share Error (APK)",
+      e?.message || JSON.stringify(e)
+    );
+  }
+};
+
 
 // ─── COMPONENT ─────────────────────────────────────────────
 
@@ -150,6 +222,30 @@ export default function OrderFormScreen() {
 
   const scrollRef = useRef<ScrollView>(null);
   const BBN_DIR = `${FileSystem.documentDirectory}BBN_Quotations/`;
+
+
+  useEffect(() => {
+  (async () => {
+    try {
+      // 1️⃣ local
+      const localRaw = await AsyncStorage.getItem("orders");
+      const localOrders = localRaw ? JSON.parse(localRaw) : [];
+
+      // 2️⃣ cloud
+      const cloudOrders = await loadOrdersFromCloud();
+
+      // 3️⃣ merge (NO DUPLICATES)
+      const finalOrders = mergeOrders(localOrders, cloudOrders);
+
+      // 4️⃣ overwrite local cache
+      await AsyncStorage.setItem("orders", JSON.stringify(finalOrders));
+
+      console.log("✅ Orders synced from cloud:", finalOrders.length);
+    } catch (e) {
+      console.log("❌ Sync error:", e);
+    }
+  })();
+}, []);
 
   // ─── HELPERS ─────────────────────────────────────────────
 
@@ -187,28 +283,29 @@ export default function OrderFormScreen() {
     await AsyncStorage.setItem("clients", JSON.stringify(clients));
   };
 
-  const generateOrderId = async () => {
-    if (!clientName) return "";
+  const deleteOrder = async (orderId: string) => {
+  try {
+    await deleteOrderFromCloud(orderId);
 
-    const d = String(new Date().getDate()).padStart(2, "0");
-    const m = String(new Date().getMonth() + 1).padStart(2, "0");
-    const y = new Date().getFullYear();
+    const raw = await AsyncStorage.getItem("orders");
+    const orders = raw ? JSON.parse(raw) : [];
 
-    const base = `${clientName.toUpperCase().replace(/\s+/g, "")}${d}${m}${y}Q`;
+    const updatedOrders = orders.filter(
+      (o: any) => o.id !== orderId
+    );
 
-    const stored = await AsyncStorage.getItem("orders");
-    const orders = stored ? JSON.parse(stored) : [];
-    const same = orders.filter((o: any) => o.id?.startsWith(base));
+    await AsyncStorage.setItem(
+      "orders",
+      JSON.stringify(updatedOrders)
+    );
 
-    const seq = String(same.length + 1).padStart(3, "0");
-    return `${base}${seq}`;
-  };
+    console.log("🗑️ ORDER DELETED:", orderId);
+  } catch (e) {
+    console.log("❌ DELETE ERROR:", e);
+  }
+};
 
-  useEffect(() => {
-    generateOrderId().then((id) => {
-      if (id) setOrderId(id);
-    });
-  }, [clientName]);
+  
 
   // ─── SUGGESTIONS ─────────────────────────────────────────────
 
@@ -269,10 +366,37 @@ export default function OrderFormScreen() {
 
   const generateAndSavePDF = async () => {
     if (!clientName || !mobile || !address || !quotationAmount) {
-      setSnackbarMessage("Fill all required fields.");
-      setSnackbarVisible(true);
-      return null;
-    }
+  setSnackbarMessage("Fill all required fields.");
+  setSnackbarVisible(true);
+  return null;
+}
+
+let quotationId = orderId;
+
+if (!quotationId) {
+  const seq = await getNextQuotationNumber();
+
+  const cleanName = clientName
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  const now = new Date();
+  const dd = String(now.getDate()).padStart(2, "0");
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const yy = String(now.getFullYear()).slice(-2);
+
+  quotationId =
+    `${cleanName}${dd}${mm}${yy}Q${String(seq).padStart(3, "0")}`;
+
+  setOrderId(quotationId);
+}
+
+if (!quotationId) {
+  setSnackbarMessage("Quotation ID not ready");
+  setSnackbarVisible(true);
+  return null;
+}
+
 
     const filteredBlocks = orderBlocks.filter((b) => {
       const noMenu = !b.description.trim();
@@ -300,62 +424,44 @@ export default function OrderFormScreen() {
           .filter(Boolean);
 
         let hindiLines: string[] = [];
+        for (let line of engLines) {
+          const clean = line.trim();
+          if (!clean) continue;
 
-for (let line of engLines) {
-  let clean = line.trim();
+          let out = clean;
 
-  // fix broken spaces
-  clean = normalizeHindiSpacing(clean);
-
-  // fix decomposed unicode (important!)
-  clean = normalizeHindiUnicode(clean);
-  clean = clean.replace(/\u200C|\u200D/g, ""); // remove hidden characters
-  clean = clean.replace(/\u200B/g, "");
-  clean = clean.trim();
-
-
-  if (!clean) continue;
-
-  let out = clean;
-
-  // Hindi → English (Latin)
+// Only transliterate if it contains Hindi letters
 if (isHindi(clean)) {
-  out = await hindiToEnglishOnline(clean);
+  out = await transliterateLine(clean);
 }
 
-  hindiLines.push(out);
-}
+hindiLines.push(out);
+
+        }
 
         const menuHindi = hindiLines.join("\n");
 
         // NOTES
         let notesHindi = "";
-if (b.notes) {
-  const notesLines = b.notes.split("\n");
-  let temp = [];
+        if (b.notes) {
+          const notesLines = b.notes.split("\n");
+          let temp: string[] = [];
 
-  for (let line of notesLines) {
-    let clean = line.trim();
+          for (let line of notesLines) {
+            const clean = line.trim();
+            if (!clean) continue;
 
-    clean = normalizeHindiSpacing(clean);
-    clean = normalizeHindiUnicode(clean);
-    clean = clean.replace(/\u200C|\u200D/g, "");
-    clean = clean.replace(/\u200B/g, "");
-    clean = clean.trim();
+            let out = clean;
 
-    if (!clean) continue;
-
-    let out = clean;
-
-    if (isHindi(clean)) {
-      out = await hindiToEnglishOnline(clean);
-    }
-
-    temp.push(out);   // ⭐⭐ THIS LINE WAS MISSING ⭐⭐
-  }
-
-  notesHindi = temp.join("\n");
+if (isHindi(clean)) {
+  out = await transliterateLine(clean);
 }
+
+temp.push(out);
+          }
+
+          notesHindi = temp.join("\n");
+        }
 
         return `
       <div style="margin-bottom:8px; font-size:14px;">
@@ -390,17 +496,25 @@ ${
 
     const menuHTML = menuHTMLArray.join("");
 
-    const logoAsset = Asset.fromModule(bbnLogo);
-    await logoAsset.downloadAsync();
+    // 🔥 LOGO — BASE64 (APK SAFE)
+const logoAsset = Asset.fromModule(bbnLogo);
+await logoAsset.downloadAsync();
 
-    const logoBase64 = await FileSystem.readAsStringAsync(
-      logoAsset.localUri || logoAsset.uri,
-      { encoding: FileSystem.EncodingType.Base64 }
-    );
+if (!logoAsset.localUri) {
+  throw new Error("Logo asset not available");
+}
 
-    const logoImgHtml = logoBase64
-      ? `<img src="data:image/png;base64,${logoBase64}" style="width:110px;height:auto;object-fit:contain;" />`
-      : `<div style="width:110px;height:40px;"></div>`;
+const base64Logo = await FileSystem.readAsStringAsync(
+  logoAsset.localUri,
+  { encoding: FileSystem.EncodingType.Base64 }
+);
+
+const logoImgHtml = `
+  <img 
+    src="data:image/png;base64,${base64Logo}"
+    style="width:110px;height:auto;object-fit:contain;" 
+  />
+`;
 
     const html = `
 <!DOCTYPE html>
@@ -473,10 +587,10 @@ ${
 
     await ensureFolder();
 
-    const { uri } = await Print.printToFileAsync({ html });
-    const finalUri = FileSystem.cacheDirectory + `${orderId}.pdf`;
-await FileSystem.copyAsync({ from: uri, to: finalUri });
+    const { uri: tempUri } = await Print.printToFileAsync({ html });
 
+const finalUri = `${BBN_DIR}${quotationId}.pdf`;
+await FileSystem.copyAsync({ from: tempUri, to: finalUri });
 
     const now = new Date();
     const dateTime =
@@ -491,27 +605,37 @@ await FileSystem.copyAsync({ from: uri, to: finalUri });
         .replace(/\u00A0/g, " ")}`;
 
     const order = {
-      id: orderId,
-      clientName,
-      mobile,
-      address,
-      dateTime, // ⭐ MOST IMPORTANT
-      orderBlocks,
-      quotationAmount,
-      pdfUri: finalUri,
-    };
+  id: quotationId,   // ⭐ GLOBAL + CLIENT FORMAT
+  clientName,
+  mobile,
+  address,
+  dateTime,
+  orderBlocks,
+  quotationAmount,
+  pdfPath: finalUri, 
+};
 
     const stored = await AsyncStorage.getItem("orders");
     const list = stored ? JSON.parse(stored) : [];
     list.push(order);
 
-    await AsyncStorage.setItem("orders", JSON.stringify(list));
-    await saveClient();
+   await AsyncStorage.setItem("orders", JSON.stringify(list));
+await saveClient();
 
-    const debug = await AsyncStorage.getItem("orders");
-    console.log("ORDERS IN STORAGE = ", debug);
+try {
+  await saveOrderToCloud(order);
+} catch (e) {
+  console.log("❌ Cloud save failed, quotation NOT finalized", e);
+  setSnackbarMessage("Internet issue. Quotation not saved.");
+  setSnackbarVisible(true);
+  return null;
+}
 
-    return { finalUri };
+const debug = await AsyncStorage.getItem("orders");
+console.log("ORDERS IN STORAGE = ", debug);
+
+    return finalUri;
+
   };
 
   const sendMessageOnly = async () => {
@@ -529,21 +653,23 @@ await FileSystem.copyAsync({ from: uri, to: finalUri });
   };
 
   const sendPDFOnly = async () => {
-    if (isSharing) return; // double tap block
-    setIsSharing(true);
+  if (isSharing) return;
+  setIsSharing(true);
 
-    const result = await generateAndSavePDF();
+  try {
+    const pdfPath = await generateAndSavePDF();
+    if (!pdfPath) return;
 
-    if (result) {
-      try {
-        await Sharing.shareAsync(result.finalUri, { mimeType: "application/pdf" });
-      } catch (e) {
-        console.log("SHARE FAILED:", e);
-      }
-    }
-
+    await sharePdfSafely(pdfPath);
+    
+  } catch (e) {
+    console.log("❌ SEND PDF ERROR:", e);
+    setSnackbarMessage("Failed to share PDF");
+    setSnackbarVisible(true);
+  } finally {
     setIsSharing(false);
-  };
+  }
+};
 
   // ─── WORKSHOP PRINT (unchanged, formatted only) ─────────────────────────────
 
@@ -590,7 +716,7 @@ await FileSystem.copyAsync({ from: uri, to: finalUri });
       for (let line of engLines) {
         const clean = line.trim();
         if (!clean) continue;
-        hindiLines.push(clean);
+        hindiLines.push(await smartTransliterateLine(clean));
       }
 
       const menuHindi = hindiLines.join("\n");
@@ -608,7 +734,7 @@ await FileSystem.copyAsync({ from: uri, to: finalUri });
             const clean = line.trim();
             if (!clean) continue;
 
-            temp.push(clean);
+            temp.push(await smartTransliterateLine(clean));
           }
 
           notesHindi = temp.join("\n");
@@ -655,8 +781,9 @@ await FileSystem.copyAsync({ from: uri, to: finalUri });
         const clean = line.trim();
         if (!clean) continue;
 
-        const translated = await transliterateLine(clean);
-        hindiLines.push(translated);
+        const translated = await smartTransliterateLine(clean);
+hindiLines.push(translated);
+
       }
 
       const menuHindi = hindiLines.join("\n");
@@ -671,8 +798,8 @@ await FileSystem.copyAsync({ from: uri, to: finalUri });
           const clean = line.trim();
           if (!clean) continue;
 
-          const tr = await transliterateLine(clean);
-          temp.push(tr);
+          const tr = await smartTransliterateLine(clean);
+temp.push(tr);
         }
 
         notesHindi = temp.join("\n");
@@ -680,51 +807,185 @@ await FileSystem.copyAsync({ from: uri, to: finalUri });
 
       // BUILD HTML BLOCK
       menuHTML += `
-      <div style="margin-bottom:8px; font-size:14px;">
-        <div style="font-weight:700;">EVENT ${i + 1}</div>
-        <div style="display:flex; justify-content:space-between; font-size:20px; font-weight:500;">
-  <div>DATE: ${date}</div>
-  <div>TIME: ${time}</div>
-  <div>GUESTS: ${b.guests || "—"}</div>
+ <div class="datetime-row">
+  <div class="datetime-text datetime-left">
+    DATE: ${date}
+  </div>
+
+  <div class="datetime-text datetime-right">
+    TIME: ${time}
+  </div>
 </div>
 
-        <div><strong>MENU</strong><br/>
-          ${menuHindi.replace(/\n/g, "<br/>")}
-        </div>
+<div class="row">
+  <div>
+    GUESTS:
+    <span class="bold">${b.guests || "—"}</span>
+  </div>
 
-        ${
-          notesHindi
-            ? `<div><strong>NOTES</strong><br/>${notesHindi.replace(
-                /\n/g,
-                "<br/>"
-              )}</div>`
-            : ""
-        }
+  <div class="bold">
+    Q. NO.: ${orderId.match(/Q(\d+)$/)?.[1] || ""}
+  </div>
+</div>
+
+
+  <div class="menu-title">MENU</div>
+
+<div class="menu-text">
+  ${menuHindi.replace(/\n/g, "<br/>")}
+</div>
+
+  ${
+  notesHindi
+    ? `
+      <div class="notes-line">
+        <span class="notes-title-inline">NOTES:</span>
+        <span class="notes-text-inline">
+          ${notesHindi.replace(/\n/g, "<br/>")}
+        </span>
       </div>
-    `;
+      `
+    : ""
+}
+
+  <hr />
+`;
     }
 
     const html = `
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <style>
-          @page { size: 80mm auto; margin: 6mm; }
-          body { font-family: monospace; font-size: 12px; }
-        </style>
-      </head>
-      <body>
-        <div style="text-align:center;">
-          <div><strong>CLIENT: ${clientName || "—"}</strong></div>
-          <div>MOBILE: ${mobile || "—"}</div>
-          <div>${address || "—"}</div>
-        </div>
-        <hr/>
-        ${menuHTML}
-      </body>
-    </html>
-  `;
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+@page {
+  size: auto;
+  margin: 0;
+}
+
+body {
+  font-family: monospace;
+  font-size: 45px;
+  line-height: 1.35;     /* 🔽 tighter */
+  font-weight: 700;
+  margin: 0;
+  padding: 0;
+}
+
+.header {
+  text-align: center;
+  font-size: 52px;          /* ⬆️ was 32 */
+  font-weight: 900;
+}
+
+.subheader {
+  text-align: center;
+  font-size: 45px;          /* ⬆️ was 28 */
+  font-weight: 900;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.bold {
+  font-weight: 900;
+}
+
+.menu-title {
+  font-size: 52px;          /* ⬆️ was 32 */
+  font-weight: 900;
+  margin-top: 12px;
+}
+
+.menu-text {
+  font-size: 48px;          /* ⬆️ was 30 */
+  font-weight: 900;
+  margin-top: 6px;
+  line-height: 1.25;
+}
+
+.notes-title {
+  font-size: 48px;          /* ⬆️ was 30 */
+  font-weight: 900;
+  margin-top: 12px;
+}
+
+.notes-text {
+  font-size: 45px;          /* ⬆️ was 28 */
+  font-weight: 800;
+  margin-top: 6px;
+}
+
+hr {
+  border: none;
+  border-top: 3px dashed #000;
+  margin: 6px 0;   /* 🔥 receipt style */
+}
+
+
+/* 🔒 DATE–TIME NEVER WRAP (4-inch safe) */
+.datetime-row {
+  display: flex;
+  justify-content: space-between;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.datetime-text {
+  font-size: 38px;        /* 🔥 still big, but safe */
+  font-weight: 900;
+  width: 50%;             /* 🔒 fixed width */
+  white-space: nowrap;    /* ❌ wrap band */
+}
+
+.datetime-left {
+  text-align: left;
+}
+
+.datetime-right {
+  text-align: right;
+}
+
+/* 🔒 RECEIPT MODE — STOP EXTRA PAGE */
+* {
+  page-break-after: auto;
+  page-break-before: auto;
+  page-break-inside: avoid;
+}
+
+.notes-line {
+  margin-top: 6px;
+}
+
+.notes-title-inline {
+  font-size: 48px;
+  font-weight: 900;
+}
+
+.notes-text-inline {
+  font-size: 40px;
+  font-weight: 800;
+  margin-left: 8px;
+  line-height: 1.25;
+}
+
+</style>
+
+  </head>
+
+    <div class="header">${clientName}</div>
+  <div class="subheader">${mobile}</div>
+  <div class="subheader">${address}</div>
+
+  <hr />
+
+    ${menuHTML}
+  </body>
+</html>
+`;
 
     await ensureFolder();
     const { uri } = await Print.printToFileAsync({ html });
@@ -937,4 +1198,5 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: "#EEE",
   },
+  
 });

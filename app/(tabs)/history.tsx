@@ -1,289 +1,686 @@
-// ──────────────────────────────────────────────────────────────────────
-// app/(tabs)/history.tsx
-// ──────────────────────────────────────────────────────────────────────
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Sharing from 'expo-sharing';
-import React, { useEffect, useState } from 'react';
-import { Animated, SectionList, StyleSheet, TouchableOpacity, View } from 'react-native';
-import { Button, Divider, IconButton, Text } from 'react-native-paper';
+import React, { useState } from "react";
+import {
+  View,
+  SectionList,
+  StyleSheet,
+  TouchableOpacity,
+  LayoutAnimation,
+  Platform,
+  UIManager,
+  Alert,
+} from "react-native";
+
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Sharing from "expo-sharing";
+
+import * as Print from "expo-print";
+import * as FileSystem from "expo-file-system/legacy";
+
+import { Asset } from "expo-asset";
+import bbnLogo from "../../assets/bbn_logo.png";
+
+import {
+  Card,
+  Divider,
+  IconButton,
+  Text,
+} from "react-native-paper";
+
+import { useFocusEffect } from "@react-navigation/native";
+
+import {
+  loadOrdersFromCloud,
+  deleteOrderFromCloud,
+} from "../../services/cloud";
+
+// ─── ENABLE ANDROID ANIMATION ───────────────────────────
+
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// ─── TYPES ─────────────────────────────────────────────
+
+type OrderBlock = {
+  description: string;
+  notes: string;
+  guests?: string;
+  date?: string | Date;
+  time?: string | Date;
+};
+
 
 type Order = {
-  id: string;
+  id: string; // NAME + DDMMYY + QXXX
   clientName: string;
   mobile: string;
   address: string;
-  dateTime: string; // "12/11/2025 at 3:30 PM"
-  orderBlocks: { description: string; notes: string }[];
+  dateTime: string;
+  orderBlocks: OrderBlock[];
   quotationAmount: string;
-  pdfUri: string;
+  pdfPath: string;   
 };
 
 type Section = {
   title: string;
   data: Order[];
-  count: number;
 };
 
-export default function HistoryScreen() {
-  const [sections, setSections] = useState<Section[]>([]);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+// ─── HELPERS ───────────────────────────────────────────
+const extractQNumber = (id: string) => {
+  const match = id.match(/Q(\d+)$/);
+  return match ? match[1] : "";
+};
 
-  // ────── Safe Date Parser (prevents Jan 1970) ──────
-  const parseDate = (s?: string): Date => {
-    if (!s) return new Date();
-    const clean = s.replace(/\u202F/g, " ").replace(/\u00A0/g, " ");
-const parts = clean.split(" at ");
+const extractDateTime = (dateTime: string) => {
+  if (!dateTime) return { date: "", time: "" };
 
-    if (parts.length !== 2) return new Date();
-    const [datePart, timePart] = parts;
-    const nums = datePart.split('/').map(Number);
-    if (nums.length !== 3 || nums.some(isNaN)) return new Date();
-    const [d, m, y] = nums;
-    const timeMatch = timePart.match(/(\d+):(\d+)\s*(AM|PM)/i);
-    if (!timeMatch) return new Date();
-    let [_, h, min, ampm] = timeMatch;
-    let hour = parseInt(h);
-    const minute = parseInt(min);
-    if (isNaN(hour) || isNaN(minute)) return new Date();
-    if (ampm.toUpperCase() === 'PM' && hour !== 12) hour += 12;
-    if (ampm.toUpperCase() === 'AM' && hour === 12) hour = 0;
-    return new Date(y, m - 1, d, hour, minute);
-  };
+  // common separators handle
+  if (dateTime.includes(" at ")) {
+    const [d, t] = dateTime.split(" at ");
+    return { date: d.trim(), time: t.trim() };
+  }
 
-  // ────── Load + Migrate + Dedupe + Group Orders ──────
-  useEffect(() => {
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem('orders');
-        if (!raw) return;
+  if (dateTime.includes(",")) {
+    const [d, t] = dateTime.split(",");
+    return { date: d.trim(), time: t.trim() };
+  }
 
-        let orders: any[] = JSON.parse(raw);
+  const parts = dateTime.split(" ");
+  if (parts.length >= 2) {
+    return {
+      date: parts[0],
+      time: parts.slice(1).join(" "),
+    };
+  }
 
-        // ---- 1. Keep only valid entries
-        const valid: Order[] = orders
-          .filter((o): o is Order => o && o.id && o.dateTime && o.pdfUri)
-          .map(o => ({
-            id: o.id,
-            clientName: o.clientName ?? '',
-            mobile: o.mobile ?? '',
-            address: o.address ?? '',
-            dateTime: o.dateTime,
-            orderBlocks: Array.isArray(o.orderBlocks) ? o.orderBlocks : [],
-            quotationAmount: o.quotationAmount ?? '0',
-            pdfUri: o.pdfUri,
-          }));
+  return { date: dateTime, time: "" };
+};
 
-        // ---- 2. DEDUPLICATE (critical for key error)
-        const seen = new Set<string>();
-        const deduped: Order[] = [];
-        for (const o of valid) {
-          if (!seen.has(o.id)) {
-            seen.add(o.id);
-            deduped.push(o);
-          }
-        }
+// ─── WORKSHOP PRINT HELPERS (FROM index.tsx) ───────────
 
-        // ---- 3. Persist cleaned data (once)
-        if (deduped.length !== valid.length) {
-          await AsyncStorage.setItem('orders', JSON.stringify(deduped));
-        }
+const UNITS = [
+  "kg","kgs","gm","g","mg",
+  "ltr","l","ml",
+  "pcs","pc","piece","pieces",
+  "plate","plates"
+];
 
-        // ---- 4. Sort newest first
-        deduped.sort((a, b) => parseDate(b.dateTime).getTime() - parseDate(a.dateTime).getTime());
+const isNumberOrUnit = (word: string) => {
+  if (/^[0-9./]+$/.test(word)) return true;
+  if (UNITS.includes(word.toLowerCase().replace(/[^a-z]/g, ""))) return true;
+  return false;
+};
 
-        // ---- 5. Group by month-year
-        const groups: Record<string, Order[]> = {};
-        deduped.forEach(o => {
-          const dt = parseDate(o.dateTime);
-          const key = `${dt.toLocaleString('default', { month: 'long' })} ${dt.getFullYear()}`;
-          if (!groups[key]) groups[key] = [];
-          groups[key].push(o);
-        });
-
-        const sectionList: Section[] = Object.entries(groups).map(([title, data]) => ({
-          title,
-          data,
-          count: data.length,
-        }));
-
-        setSections(sectionList);
-      } catch (e) {
-        console.error('History load failed:', e);
-      }
-    })();
-  }, []);
-
-  // ────── Toggle Expand ──────
-  const toggleExpand = (id: string) => {
-
-    setExpanded(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  // DELETE ORDER
-const deleteOrder = async (orderId: string) => {
+const transliterateWord = async (word: string) => {
   try {
-    const raw = await AsyncStorage.getItem("orders");
-    if (!raw) return;
+    const url =
+      "https://inputtools.google.com/request?text=" +
+      encodeURIComponent(word) +
+      "&itc=hi-t-i0-und&num=5";
 
-    let orders = JSON.parse(raw);
-    orders = orders.filter((o: Order) => o.id !== orderId);
-    await AsyncStorage.setItem("orders", JSON.stringify(orders));
-
-    setSections(prev =>
-      prev
-        .map(sec => ({
-          ...sec,
-          data: sec.data.filter(o => o.id !== orderId),
-          count: sec.data.filter(o => o.id !== orderId).length,
-        }))
-        .filter(sec => sec.count > 0)
-    );
-  } catch (e) {
-    console.error("Delete failed:", e);
+    const res = await fetch(url);
+    const json = await res.json();
+    return json?.[1]?.[0]?.[1]?.[0] || word;
+  } catch {
+    return word;
   }
 };
 
-  // ────── Share ONLY the PDF (no WhatsApp message) ──────
-  const sharePDF = async (pdfUri: string) => {
+const smartTransliterateLine = async (line: string) => {
+  const words = line.trim().split(/\s+/);
+  let out: string[] = [];
+
+  for (const w of words) {
+    if (isNumberOrUnit(w)) out.push(w);
+    else out.push(await transliterateWord(w));
+  }
+
+  return out.join(" ");
+};
+
+const BBN_DIR = `${FileSystem.documentDirectory}BBN_Quotations/`;
+
+const ensureFolder = async () => {
+  const info = await FileSystem.getInfoAsync(BBN_DIR);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(BBN_DIR, { intermediates: true });
+  }
+};
+
+// 🔥 MAIN WORKSHOP PRINT (SAFE)
+const workshopPrint = async (item: Order) => {
+    // 🔹 EXTRACT DATE & TIME SAFELY (JS SIDE)
+  let date = "";
+  let time = "";
+
+  if (item.dateTime) {
+    if (item.dateTime.includes(" at ")) {
+      const parts = item.dateTime.split(" at ");
+      date = parts[0];
+      time = parts[1];
+    } else if (item.dateTime.includes(",")) {
+      const parts = item.dateTime.split(",");
+      date = parts[0];
+      time = parts[1];
+    } else {
+      const parts = item.dateTime.split(" ");
+      date = parts[0];
+      time = parts.slice(1).join(" ");
+    }
+  }
+
+  let menuHTML = "";
+
+  for (let i = 0; i < item.orderBlocks.length; i++) {
+    const b = item.orderBlocks[i];
+
+    const guests = b.guests?.trim() || "—";
+
+    const engLines = (b.description || "").split("\n");
+    let hindiLines: string[] = [];
+
+    for (let line of engLines) {
+      const clean = line.trim();
+      if (!clean) continue;
+      hindiLines.push(await smartTransliterateLine(clean));
+    }
+
+    const menuHindi = hindiLines.join("\n");
+
+    let notesHindi = "";
+    if (b.notes) {
+      const lines = b.notes.split("\n");
+      let tmp: string[] = [];
+      for (let l of lines) {
+        const clean = l.trim();
+        if (!clean) continue;
+        tmp.push(await smartTransliterateLine(clean));
+      }
+      notesHindi = tmp.join("\n");
+    }
+
+    menuHTML += `
+
+  <div style="font-weight:900;font-size:48px;margin-top:12px;">
+    MENU
+  </div>
+
+  <div style="font-size:46px;line-height:1.25;">
+    ${menuHindi.replace(/\n/g,"<br/>")}
+  </div>
+
+  ${
+    notesHindi
+      ? `<div style="margin-top:6px;font-size:42px;">
+           <b>NOTES:</b> ${notesHindi.replace(/\n/g,"<br/>")}
+         </div>`
+      : ""
+  }
+
+  <hr />
+`;
+  }
+
+  const html = `
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@page{size:auto;margin:0}
+body{font-family:monospace;font-size:45px;font-weight:900;margin:0}
+hr{border:none;border-top:3px dashed #000;margin:6px 0}
+</style>
+</head>
+<body>
+<div style="text-align:center;font-size:52px;">${item.clientName}</div>
+<div style="text-align:center;font-size:45px;">${item.mobile}</div>
+<div style="text-align:center;font-size:45px;">${item.address}</div>
+
+<div style="
+  display:flex;
+  justify-content:space-between;
+  font-size:38px;
+  font-weight:900;
+  margin-top:4px;
+">
+  <div>DATE: ${date}</div>
+  <div>TIME: ${time}</div>
+</div>
+
+<div style="
+  display:flex;
+  justify-content:space-between;
+  font-size:38px;
+  font-weight:900;
+  margin-top:4px;
+">
+  <div>GUESTS: ${item.orderBlocks[0]?.guests || "—"}</div>
+  <div>Q. NO.: ${extractQNumber(item.id)}</div>
+</div>
+
+<hr/>
+
+${menuHTML}
+</body>
+</html>
+`;
+
+  await ensureFolder();
+  const { uri } = await Print.printToFileAsync({ html });
+  const finalUri = `${BBN_DIR}${item.id}_workshop.pdf`;
+
+  await FileSystem.copyAsync({ from: uri, to: finalUri });
+  await Sharing.shareAsync(finalUri, { mimeType: "application/pdf" });
+};
+
+// 🔥 EXTRACT NUMBER FROM "...Q001"
+const extractQuotationNumber = (id: string): number => {
+  const match = id.match(/Q(\d+)$/);
+  return match ? Number(match[1]) : 0;
+};
+
+const quotationPrint = async (item: Order) => {
+  await ensureFolder();
+
+  /* -------- MENU HTML (NO TRANSLATION) -------- */
+  let menuHTML = "";
+
+  for (let i = 0; i < item.orderBlocks.length; i++) {
+    const b = item.orderBlocks[i];
+
+    const date = b.date
+      ? new Date(b.date).toLocaleDateString("en-GB")
+      : "";
+
+    const time = b.time
+      ? new Date(b.time).toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        })
+      : "";
+
+    menuHTML += `
+      <div style="margin-bottom:8px;">
+        <div style="font-weight:700;">EVENT ${i + 1}</div>
+
+        <div style="display:flex;justify-content:space-between;font-size:20px;">
+          <div>DATE: ${date}</div>
+          <div>TIME: ${time}</div>
+          <div>GUESTS: ${b.guests || "—"}</div>
+        </div>
+
+        <div style="margin-top:6px;font-size:20px;">
+          <strong>MENU</strong><br/>
+          ${b.description?.replace(/\n/g, "<br/>") || ""}
+        </div>
+
+        ${
+          b.notes
+            ? `<div style="margin-top:6px;font-size:20px;">
+                 <strong>NOTES:</strong>
+                 ${b.notes.replace(/\n/g, "<br/>")}
+               </div>`
+            : ""
+        }
+
+        <hr/>
+      </div>
+    `;
+  }
+
+  /* -------- LOGO (BASE64 – APK SAFE) -------- */
+  const logoAsset = Asset.fromModule(bbnLogo);
+  await logoAsset.downloadAsync();
+
+  const base64Logo = await FileSystem.readAsStringAsync(
+    logoAsset.localUri!,
+    { encoding: FileSystem.EncodingType.Base64 }
+  );
+
+  const logoImgHtml = `
+    <img src="data:image/png;base64,${base64Logo}"
+         style="width:110px;height:auto;" />
+  `;
+
+  /* -------- FINAL HTML (SAME AS index.tsx) -------- */
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @page { size: A4; margin: 20mm 15mm; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 18px;
+    color: #222;
+    line-height: 1.6;
+  }
+  .hr { border-top: 3px dashed #ff0000; margin: 10px 0; }
+</style>
+</head>
+
+<body>
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <div></div>
+
+    <div style="text-align:center;">
+      <h1 style="font-size:46px;color:#d40000;font-weight:900;letter-spacing:3px;margin:0;">
+        B.B.N
+      </h1>
+      <p style="font-size:20px;font-weight:bold;">CATERERS | SWEETS | NAMKEEN | SNACKS</p>
+      <p style="font-size:18px;">PURE VEGETARIAN | INDOOR & OUTDOOR CATERING</p>
+    </div>
+
+    <div>${logoImgHtml}</div>
+  </div>
+
+  <div class="hr"></div>
+
+  <p style="text-align:center;font-size:16px;">
+    27, Channamal Park, East Punjabi Bagh, New Delhi-26<br/>
+    Phone: 9250928676 | 9540505607
+  </p>
+
+  <div style="margin-top:30px;">
+    <div style="display:flex;justify-content:space-between;font-size:19px;">
+      <div><strong>Client Name:</strong> ${item.clientName}</div>
+      <div><strong>Mobile:</strong> ${item.mobile}</div>
+    </div>
+
+    <div style="margin-top:10px;">
+      <strong>Event Location:</strong> ${item.address}
+    </div>
+  </div>
+
+  <div style="margin-top:30px;">
+    ${menuHTML}
+  </div>
+
+  <div style="margin-top:40px;font-size:19px;">
+    <p>
+      We'll be glad to cater you for
+      <strong>Rs. ${Number(item.quotationAmount).toLocaleString("en-IN")}</strong>
+    </p>
+  </div>
+
+  <p>Regards,<br/><strong>B.B.N CATERERS</strong></p>
+  </div>
+
+  <div style="text-align:center;font-style:italic;font-size:15px;color:#555;margin-top:40px;">
+    <p>WE LOOK FORWARD TO SERVE YOU FOR MANY MORE YEARS TO COME ...</p>
+  </div>
+</body>
+</html>
+`;
+
+  const { uri } = await Print.printToFileAsync({ html });
+  const finalUri = `${BBN_DIR}${item.id}.pdf`;
+
+  await FileSystem.copyAsync({ from: uri, to: finalUri });
+
+  await Sharing.shareAsync(finalUri, { mimeType: "application/pdf" });
+};
+
+// 🔥 SORT BY QUOTATION NUMBER (DESC)
+const sortByQuotationNumber = (orders: Order[]): Order[] => {
+  return [...orders].sort(
+    (a, b) =>
+      extractQuotationNumber(b.id) -
+      extractQuotationNumber(a.id)
+  );
+};
+
+// ─── SCREEN ────────────────────────────────────────────
+
+export default function HistoryScreen() {
+  const [sections, setSections] = useState<Section[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // 🔄 Reload every time screen opens
+  useFocusEffect(
+    React.useCallback(() => {
+      loadOrders();
+    }, [])
+  );
+
+  // ─── LOAD ORDERS (LOCAL + CLOUD) ─────────────────────
+
+  const loadOrders = async () => {
     try {
-      await Sharing.shareAsync(pdfUri, { mimeType: 'application/pdf' });
-    } catch (err) {
-      console.error('Share failed:', err);
+      // 1️⃣ LOCAL
+      const localRaw = await AsyncStorage.getItem("orders");
+      const localOrders: Order[] = localRaw ? JSON.parse(localRaw) : [];
+
+      const sortedLocal = sortByQuotationNumber(localOrders);
+
+      // show immediately
+      setSections([
+        { title: "All Quotations", data: sortedLocal },
+      ]);
+
+      // 2️⃣ CLOUD
+      const cloudOrders: Order[] = await loadOrdersFromCloud();
+
+      if (!cloudOrders || cloudOrders.length === 0) {
+        return;
+      }
+
+      // 3️⃣ MERGE (cloud overrides)
+      const map = new Map<string, Order>();
+      localOrders.forEach((o) => map.set(o.id, o));
+      cloudOrders.forEach((o) => map.set(o.id, o));
+
+      const merged = sortByQuotationNumber(
+        Array.from(map.values())
+      );
+
+      // 4️⃣ SAVE + DISPLAY
+      await AsyncStorage.setItem("orders", JSON.stringify(merged));
+
+      setSections([
+        { title: "All Quotations", data: merged },
+      ]);
+    } catch (e) {
+      console.log("❌ HISTORY LOAD ERROR:", e);
     }
   };
+
+  // ─── EXPAND / COLLAPSE ───────────────────────────────
+
+  const toggleExpand = (id: string) => {
+    LayoutAnimation.configureNext(
+      LayoutAnimation.Presets.easeInEaseOut
+    );
+    setExpandedId((prev) => (prev === id ? null : id));
+  };
+
+  // ─── DELETE ORDER ────────────────────────────────────
+
+  const deleteOrder = (orderId: string) => {
+    Alert.alert(
+      "Delete Quotation",
+      "This will permanently delete the quotation.",
+      [
+        { text: "Cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteOrderFromCloud(orderId);
+
+              const raw = await AsyncStorage.getItem("orders");
+              const list: Order[] = raw ? JSON.parse(raw) : [];
+
+              const updated = sortByQuotationNumber(
+                list.filter((o) => o.id !== orderId)
+              );
+
+              await AsyncStorage.setItem(
+                "orders",
+                JSON.stringify(updated)
+              );
+
+              setSections([
+                { title: "All Quotations", data: updated },
+              ]);
+            } catch (e) {
+              console.log("❌ DELETE ERROR:", e);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ─── UI ─────────────────────────────────────────────
 
   return (
     <View style={styles.container}>
       <SectionList
         sections={sections}
-        // Unique key: id + index to guarantee uniqueness even after dedupe
-        keyExtractor={(item, index) => `${item.id}-${index}`}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={{ paddingBottom: 40 }}
         renderSectionHeader={({ section }) => (
-          <View style={styles.sectionHeader}>
-            <Text variant="titleMedium" style={styles.sectionTitle}>
-              {section.title} ({section.count} quotation{section.count > 1 ? 's' : ''})
-            </Text>
+          <Text style={styles.sectionHeader}>
+            {section.title}
+          </Text>
+        )}
+        
+        renderItem={({ item }) => {
+  const expanded = expandedId === item.id;
+
+  return (
+    <View style={{ marginBottom: 10 }}>
+      <Card style={styles.card}>
+        {/* HEADER */}
+        <TouchableOpacity onPress={() => toggleExpand(item.id)}>
+          <View style={styles.rowBetween}>
+            <View>
+              <Text variant="titleMedium">
+                {item.clientName}
+              </Text>
+              <Text style={styles.subText}>
+                Quotation ID: {item.id}
+              </Text>
+            </View>
+
+            <IconButton
+              icon={expanded ? "chevron-up" : "chevron-down"}
+            />
+          </View>
+        </TouchableOpacity>
+
+        <Text>{item.mobile}</Text>
+        <Text>{item.address}</Text>
+        <Text style={styles.subText}>
+          {item.dateTime}
+        </Text>
+
+        {expanded && (
+          <View>
+            <Divider style={{ marginVertical: 8 }} />
+
+            {item.orderBlocks.map((b, i) => (
+              <View key={`${item.id}-${i}`} style={styles.block}>
+                <Text style={styles.blockTitle}>
+                  Event {i + 1}
+                </Text>
+                <Text>{b.description}</Text>
+                {b.notes ? (
+                  <Text style={styles.notes}>
+                    Notes: {b.notes}
+                  </Text>
+                ) : null}
+              </View>
+            ))}
+
+            <Divider style={{ marginVertical: 8 }} />
+
+            <View style={styles.rowBetween}>
+              <Text variant="titleSmall">
+                Amount: ₹{item.quotationAmount}
+              </Text>
+
+              <View style={styles.actions}>
+  <IconButton
+    icon="printer"
+    onPress={() => workshopPrint(item)}
+  />
+
+  <IconButton
+  icon="share-variant"
+  onPress={() => quotationPrint(item)}
+/>
+
+  <IconButton
+    icon="delete"
+    iconColor="red"
+    onPress={() => deleteOrder(item.id)}
+  />
+</View>
+
+            </View>
           </View>
         )}
-        renderItem={({ item, index }) => {
-          const isExpanded = expanded.has(item.id);
-          return (
-            <View style={styles.card}>
-              {/* ── Compact Header ── */}
-              <TouchableOpacity onPress={() => toggleExpand(item.id)} activeOpacity={0.7}>
-                <View style={styles.headerRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text variant="titleMedium" style={styles.idText}>
-                      {item.id}
-                    </Text>
-                    <Text style={styles.clientText}>{item.clientName}</Text>
-                    <Text style={styles.dateText}>{item.dateTime}</Text>
-                    <Text style={styles.amountText}>
-                      ₹{parseFloat(item.quotationAmount).toLocaleString('en-IN')}
-                    </Text>
-                  </View>
-                  <IconButton
-                    icon={isExpanded ? 'chevron-up' : 'chevron-down'}
-                    size={20}
-                    style={{ margin: 0 }}
-                  />
-                </View>
-              </TouchableOpacity>
+      </Card>
+    </View>
+  );
+}}
 
-              {/* ── Expandable Details ── */}
-              {isExpanded && (
-                <Animated.View style={styles.details}>
-                  <Divider style={styles.divider} />
-                  <Text style={styles.label}>Mobile: {item.mobile}</Text>
-                  <Text style={styles.label}>Location: {item.address}</Text>
-
-                  <Text style={[styles.label, { marginTop: 8, fontWeight: '600' }]}>
-                    Menu:
-                  </Text>
-                  {item.orderBlocks.map((b, i) => (
-                    <View key={i} style={styles.menuItem}>
-                      <Text style={styles.menuTitle}>• Order {i + 1}:</Text>
-                      <Text style={styles.menuDesc}>{b.description || '–'}</Text>
-                      {b.notes ? (
-                        <Text style={styles.menuNote}>Note: {b.notes}</Text>
-                      ) : null}
-                    </View>
-                  ))}
-
-                  <Button
-                    mode="contained"
-                    icon="file-pdf-box"
-                    onPress={() => sharePDF(item.pdfUri)}
-                    style={styles.shareBtn}
-                    contentStyle={{ height: 44 }}
-                  >
-                    Share PDF
-                  </Button>
-
-                  <Button
-  mode="outlined"
-  icon="delete"
-  onPress={() => deleteOrder(item.id)}
-  style={[styles.shareBtn, { borderColor: "#ff0000" }]}
-  textColor="#ff0000"
-  contentStyle={{ height: 44 }}
->
-  Delete Order
-</Button>
-
-                </Animated.View>
-              )}
-            </View>
-          );
-        }}
         ListEmptyComponent={
-          <Text style={styles.empty}>No quotations yet. Create one in the New Order tab!</Text>
+          <Text style={{ textAlign: "center", marginTop: 40 }}>
+            No order history found
+          </Text>
         }
       />
     </View>
   );
 }
 
-// ────────────────────── Styles ──────────────────────
+// ─── STYLES ───────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f8f9fa' },
+  container: {
+    flex: 1,
+    padding: 10,
+  },
   sectionHeader: {
-    backgroundColor: '#e9ecef',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderColor: '#dee2e6',
-  },
-  sectionTitle: { fontWeight: '600', color: '#212529' },
-  card: {
-    marginHorizontal: 16,
+    fontSize: 16,
+    fontWeight: "bold",
     marginVertical: 6,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    elevation: 2,
-    overflow: 'hidden',
   },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
+  card: {
+    marginBottom: 10,
+    padding: 10,
   },
-  idText: { fontWeight: 'bold', color: '#ff6600' },
-  clientText: { fontSize: 15, color: '#212529' },
-  dateText: { fontSize: 13, color: '#6c757d', marginTop: 2 },
-  amountText: { fontSize: 14, fontWeight: '600', color: '#212529', marginTop: 4 },
-  details: { paddingHorizontal: 12, paddingBottom: 12 },
-  divider: { marginVertical: 8 },
-  label: { fontSize: 14, color: '#495057', marginBottom: 4 },
-  menuItem: { marginLeft: 8, marginBottom: 8 },
-  menuTitle: { fontWeight: '600', color: '#212529' },
-  menuDesc: { marginLeft: 8, color: '#212529' },
-  menuNote: { marginLeft: 8, fontStyle: 'italic', color: '#6c757d', fontSize: 13 },
-  shareBtn: { marginTop: 12, backgroundColor: '#007BFF' }, // blue for PDF
-  empty: { textAlign: 'center', marginTop: 40, fontSize: 16, color: '#6c757d' },
+  rowBetween: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  actions: {
+    flexDirection: "row",
+  },
+  subText: {
+    fontSize: 12,
+    color: "#666",
+  },
+  block: {
+    marginBottom: 8,
+  },
+  blockTitle: {
+    fontWeight: "600",
+  },
+  notes: {
+    fontStyle: "italic",
+    color: "#555",
+  },
 });

@@ -1,14 +1,16 @@
+// firebaseConfig.ts
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCrdYbGfyBo0uoI4B4gPfEy8MZNdlYkvkc",
-  authDomain: "bbn-catering-app.firebaseapp.com",
-  projectId: "bbn-catering-app",
-  storageBucket: "bbn-catering-app.appspot.com",
-  messagingSenderId: "649478189134",
-  appId: "1:649478189134:web:491f2e97ac22704eeed31f"
+  apiKey: "AIzaSyC0SJryERQgFG_LCmHrZimEkTdRpsPAC-g",
+  authDomain: "bbn-caterers.firebaseapp.com",
+  projectId: "bbn-caterers",
+  storageBucket: "bbn-caterers.firebasestorage.app",
+  messagingSenderId: "209245951082",
+  appId: "1:209245951082:web:bb0ee038e769697e1fe613"
 };
 
-export const app = initializeApp(firebaseConfig);
+const app = initializeApp(firebaseConfig);
+
 export const db = getFirestore(app);
