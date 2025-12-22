@@ -151,6 +151,39 @@ const ensureFolder = async () => {
   }
 };
 
+const sharePdfFromHistory = async (finalUri: string) => {
+  try {
+    const info = await FileSystem.getInfoAsync(finalUri);
+    if (!info.exists) {
+      Alert.alert("PDF not found");
+      return;
+    }
+
+    if (!(await Sharing.isAvailableAsync())) {
+      Alert.alert("Sharing not available");
+      return;
+    }
+
+    // 🔥 APK SAFE: same filename, but cache location
+    const fileName = finalUri.split("/").pop();
+    const cacheUri = FileSystem.cacheDirectory + fileName;
+
+    await FileSystem.copyAsync({
+      from: finalUri,
+      to: cacheUri,
+    });
+
+    await Sharing.shareAsync(cacheUri, {
+      mimeType: "application/pdf",
+      dialogTitle: "Share Quotation PDF",
+    });
+
+  } catch (e: any) {
+    console.log("❌ HISTORY SHARE ERROR:", e);
+    Alert.alert("Share failed", e?.message || "Unknown error");
+  }
+};
+
 // 🔥 MAIN WORKSHOP PRINT (SAFE)
 const workshopPrint = async (item: Order) => {
     // 🔹 EXTRACT DATE & TIME SAFELY (JS SIDE)
@@ -275,7 +308,7 @@ ${menuHTML}
   const finalUri = `${BBN_DIR}${item.id}_workshop.pdf`;
 
   await FileSystem.copyAsync({ from: uri, to: finalUri });
-  await Sharing.shareAsync(finalUri, { mimeType: "application/pdf" });
+  await sharePdfFromHistory(finalUri);
 };
 
 // 🔥 EXTRACT NUMBER FROM "...Q001"
@@ -411,11 +444,7 @@ const quotationPrint = async (item: Order) => {
   </div>
 
   <p>Regards,<br/><strong>B.B.N CATERERS</strong></p>
-  </div>
-
-  <div style="text-align:center;font-style:italic;font-size:15px;color:#555;margin-top:40px;">
-    <p>WE LOOK FORWARD TO SERVE YOU FOR MANY MORE YEARS TO COME ...</p>
-  </div>
+  
 </body>
 </html>
 `;
@@ -425,7 +454,7 @@ const quotationPrint = async (item: Order) => {
 
   await FileSystem.copyAsync({ from: uri, to: finalUri });
 
-  await Sharing.shareAsync(finalUri, { mimeType: "application/pdf" });
+  await sharePdfFromHistory(finalUri);
 };
 
 // 🔥 SORT BY QUOTATION NUMBER (DESC)
