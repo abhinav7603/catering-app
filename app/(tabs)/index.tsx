@@ -11,7 +11,7 @@ import * as Sharing from "expo-sharing";
 import { Platform } from "react-native";
 import { Alert } from "react-native";
 
-import { getNextQuotationNumber } from "../../services/cloud";
+
 
 import {
   KeyboardAvoidingView,
@@ -108,8 +108,6 @@ async function smartTransliterateLine(line: string) {
   return out.join(" ");
 }
 
-const getCurrentYear = () => new Date().getFullYear();
-
 // ─── TYPES ─────────────────────────────────────────────
 
 type Client = {
@@ -126,6 +124,57 @@ type OrderBlock = {
   guests: string;
   date: Date;
   time: Date;
+};
+
+const getCurrentYear = () => new Date().getFullYear();
+
+const peekNextQuotationId = async (
+  clientName: string,
+  orderBlocks: OrderBlock[]
+) => {
+  const eventDates = orderBlocks
+    .map(b => b.date)
+    .filter(d => d instanceof Date);
+
+  const earliestDate =
+    eventDates.length > 0
+      ? new Date(Math.min(...eventDates.map(d => d.getTime())))
+      : new Date();
+
+  const dd = String(earliestDate.getDate()).padStart(2, "0");
+  const mm = String(earliestDate.getMonth() + 1).padStart(2, "0");
+  const yy = String(earliestDate.getFullYear()).slice(-2);
+
+  const cleanName = clientName
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  const year = getCurrentYear();
+
+  const storedYear = await AsyncStorage.getItem("quotation_counter_year");
+  const storedCounter = await AsyncStorage.getItem("quotation_global_counter");
+
+  let counter = 1;
+  if (storedYear === String(year) && storedCounter) {
+    counter = Number(storedCounter) + 1;
+  }
+
+  return `${cleanName}${dd}${mm}${yy}Q${String(counter).padStart(3, "0")}`;
+};
+
+const commitQuotationCounter = async () => {
+  const year = getCurrentYear();
+
+  const storedYear = await AsyncStorage.getItem("quotation_counter_year");
+  const storedCounter = await AsyncStorage.getItem("quotation_global_counter");
+
+  let counter = 1;
+  if (storedYear === String(year) && storedCounter) {
+    counter = Number(storedCounter) + 1;
+  }
+
+  await AsyncStorage.setItem("quotation_counter_year", String(year));
+  await AsyncStorage.setItem("quotation_global_counter", String(counter));
 };
 
 function mergeOrders(localOrders: any[], cloudOrders: any[]) {
@@ -147,46 +196,38 @@ function mergeOrders(localOrders: any[], cloudOrders: any[]) {
   );
 }
 
-
-const sharePdfSafely = async (sourceUri: string) => {
+const shareFinalPdf = async (finalUri: string) => {
   try {
-    const info = await FileSystem.getInfoAsync(sourceUri);
-    console.log("📄 SOURCE:", sourceUri, info);
-
+    const info = await FileSystem.getInfoAsync(finalUri);
     if (!info.exists) {
-      Alert.alert("PDF not found", sourceUri);
+      Alert.alert("PDF not found");
       return;
     }
 
     if (!(await Sharing.isAvailableAsync())) {
-      Alert.alert("Sharing not available on this device");
+      Alert.alert("Sharing not available");
       return;
     }
 
-    const tempUri =
-      FileSystem.cacheDirectory + `share_${Date.now()}.pdf`;
+    // 🔥 COPY TO CACHE WITH SAME NAME (APK SAFE)
+    const fileName = finalUri.split("/").pop();
+    const cacheUri = FileSystem.cacheDirectory + fileName;
 
     await FileSystem.copyAsync({
-      from: sourceUri,
-      to: tempUri,
+      from: finalUri,
+      to: cacheUri,
     });
 
-    const tempInfo = await FileSystem.getInfoAsync(tempUri);
-    console.log("📄 TEMP:", tempInfo);
-
-    await Sharing.shareAsync(tempUri, {
+    await Sharing.shareAsync(cacheUri, {
       mimeType: "application/pdf",
-      dialogTitle: "Share PDF",
+      dialogTitle: "Share Quotation PDF",
     });
+
   } catch (e: any) {
     console.log("❌ SHARE ERROR:", e);
-    Alert.alert(
-      "Share Error (APK)",
-      e?.message || JSON.stringify(e)
-    );
+    Alert.alert("Share failed", e?.message || "Unknown error");
   }
 };
-
 
 // ─── COMPONENT ─────────────────────────────────────────────
 
@@ -246,6 +287,21 @@ export default function OrderFormScreen() {
     }
   })();
 }, []);
+
+useEffect(() => {
+  if (!clientName || orderBlocks.length === 0) {
+    setOrderId("");
+    return;
+  }
+
+  (async () => {
+    const previewId = await peekNextQuotationId(
+      clientName,
+      orderBlocks
+    );
+    setOrderId(previewId);
+  })();
+}, [clientName, orderBlocks]);
 
   // ─── HELPERS ─────────────────────────────────────────────
 
@@ -365,34 +421,16 @@ export default function OrderFormScreen() {
   // ─── PDF CREATION ─────────────────────────────────────────────
 
   const generateAndSavePDF = async () => {
-    if (!clientName || !mobile || !address || !quotationAmount) {
-  setSnackbarMessage("Fill all required fields.");
+    const quotationId = orderId;
+
+if (!quotationId) {
+  setSnackbarMessage("Quotation ID not ready");
   setSnackbarVisible(true);
   return null;
 }
 
-let quotationId = orderId;
-
-if (!quotationId) {
-  const seq = await getNextQuotationNumber();
-
-  const cleanName = clientName
-    .toUpperCase()
-    .replace(/\s+/g, "");
-
-  const now = new Date();
-  const dd = String(now.getDate()).padStart(2, "0");
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const yy = String(now.getFullYear()).slice(-2);
-
-  quotationId =
-    `${cleanName}${dd}${mm}${yy}Q${String(seq).padStart(3, "0")}`;
-
-  setOrderId(quotationId);
-}
-
-if (!quotationId) {
-  setSnackbarMessage("Quotation ID not ready");
+    if (!clientName || !mobile || !address || !quotationAmount) {
+  setSnackbarMessage("Fill all required fields.");
   setSnackbarVisible(true);
   return null;
 }
@@ -624,6 +662,8 @@ await saveClient();
 
 try {
   await saveOrderToCloud(order);
+  await commitQuotationCounter();
+
 } catch (e) {
   console.log("❌ Cloud save failed, quotation NOT finalized", e);
   setSnackbarMessage("Internet issue. Quotation not saved.");
@@ -660,7 +700,7 @@ console.log("ORDERS IN STORAGE = ", debug);
     const pdfPath = await generateAndSavePDF();
     if (!pdfPath) return;
 
-    await sharePdfSafely(pdfPath);
+    await shareFinalPdf(pdfPath);
     
   } catch (e) {
     console.log("❌ SEND PDF ERROR:", e);
