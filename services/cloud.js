@@ -38,16 +38,7 @@ export async function getNextQuotationNumber() {
     const data = snap.data();
     let counter = Number(data.counter || 0);
 
-    // New year → reset
-    if (data.year !== currentYear) {
-      counter = 1;
-      transaction.set(
-        ref,
-        { year: currentYear, counter },
-        { merge: true }
-      );
-      return counter;
-    }
+
 
     // Normal increment
     counter += 1;
