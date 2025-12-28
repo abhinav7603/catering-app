@@ -55,6 +55,7 @@ type Order = {
   orderBlocks: OrderBlock[];
   quotationAmount: string;
   pdfUri: string;
+  archived?: boolean; // 👈 ADD THIS
 
   paymentStatus?: "UNPAID" | "PARTIAL" | "PAID";
   paidAmount?: number;
@@ -414,7 +415,8 @@ cloud.forEach(o => {
 setStats(calculateStats(periodOrders));
 
     setAllOrders(merged);
-setSections(groupOrders(merged));
+const visiblePayments = merged.filter(o => !o.archived);
+setSections(groupOrders(visiblePayments));
 
 merged.forEach(order => {
   if (isReminderDue(order)) {
@@ -440,19 +442,14 @@ merged.forEach(order => {
 });
 
 // 🧹 AUTO REMOVE OLD PAID PAYMENTS (3 days+)
-const cleaned = merged.filter(o => {
-  if (shouldDeletePaidOrder(o)) {
-    deleteOrderFromCloud(o.id); // 🔥 cloud se bhi delete
-    return false; // remove from payments
+merged.forEach(o => {
+  if (shouldDeletePaidOrder(o) && !o.archived) {
+    o.archived = true;
+    saveOrderToCloud(sanitizeForFirebase(o)); // cloud me bhi save
   }
-  return true;
 });
 
-if (cleaned.length !== merged.length) {
-  await AsyncStorage.setItem("orders", JSON.stringify(cleaned));
-  setAllOrders(cleaned);
-  setSections(groupOrders(cleaned));
-}
+
 
   };
 

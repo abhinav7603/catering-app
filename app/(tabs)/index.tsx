@@ -364,10 +364,19 @@ useEffect(() => {
   // ─── PDF CREATION ─────────────────────────────────────────────
 
   const generateAndSavePDF = async (quotationNo: number) => {
+    const now = new Date();
+
+const dd = String(now.getDate()).padStart(2, "0");
+const mm = String(now.getMonth() + 1).padStart(2, "0");
+const yy = String(now.getFullYear()).slice(-2);
+
+const dateStamp = `${dd}${mm}${yy}`;
+
     const quotationId = `${clientName
   .toUpperCase()
-  .replace(/\s+/g, "")}Q${String(quotationNo).padStart(3, "0")
-}`;
+  .replace(/\s+/g, "")
+  .replace(/[^A-Z0-9]/g, "")
+}${dateStamp}Q${String(quotationNo).padStart(3, "0")}`;
 
 setOrderId(quotationId); // 🔥 IMPORTANT
 
@@ -578,17 +587,16 @@ const logoImgHtml = `
 const finalUri = `${BBN_DIR}${quotationId}.pdf`;
 await FileSystem.copyAsync({ from: tempUri, to: finalUri });
 
-    const now = new Date();
-    const dateTime =
-      `${now.toLocaleDateString("en-GB")} at ` +
-      `${now
-        .toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: true,
-        })
-        .replace(/\u202F/g, " ")
-        .replace(/\u00A0/g, " ")}`;
+const dateTime =
+  `${now.toLocaleDateString("en-GB")} at ` +
+  `${now
+    .toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    })
+    .replace(/\u202F/g, " ")
+    .replace(/\u00A0/g, " ")}`;
 
     const order = {
   id: quotationId,   // ⭐ GLOBAL + CLIENT FORMAT
