@@ -7,12 +7,16 @@ import {
   getDocs,
   deleteDoc,
   runTransaction,
+  serverTimestamp,
 } from "firebase/firestore";
 
 import { db } from "../firebaseConfig";
 
 /* ─────────────────────────────────────────────
-   🔥 CLOUD QUOTATION COUNTER (GLOBAL & SAFE)
+   🔥 GLOBAL QUOTATION COUNTER (SINGLE SOURCE)
+   - Transaction safe
+   - Year reset safe
+   - Multi-device safe
 ───────────────────────────────────────────── */
 
 export async function getNextQuotationNumber() {
@@ -51,12 +55,13 @@ export async function getNextQuotationNumber() {
     return counter;
   });
 
-  // 🔒 ensure number always
   return Number(next);
 }
 
 /* ─────────────────────────────────────────────
    SAVE / UPDATE ORDER TO CLOUD
+   - Idempotent (same ID safe)
+   - Server timestamp added
 ───────────────────────────────────────────── */
 
 export async function saveOrderToCloud(order) {
@@ -67,6 +72,7 @@ export async function saveOrderToCloud(order) {
       paymentStatus: order.paymentStatus || "UNPAID",
       paidAmount: order.paidAmount || 0,
       pendingAmount: order.pendingAmount || 0,
+      createdAt: serverTimestamp(), // 🔒 cloud truth
     },
     { merge: true }
   );
@@ -76,6 +82,7 @@ export async function saveOrderToCloud(order) {
 
 /* ─────────────────────────────────────────────
    LOAD ORDERS FROM CLOUD
+   - Date & Time restore safe
 ───────────────────────────────────────────── */
 
 export async function loadOrdersFromCloud() {
@@ -107,4 +114,5 @@ export async function loadOrdersFromCloud() {
 
 export async function deleteOrderFromCloud(orderId) {
   await deleteDoc(doc(db, "orders", orderId));
+  console.log("🗑️ DELETED FROM CLOUD:", orderId);
 }

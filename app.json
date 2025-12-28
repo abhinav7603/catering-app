@@ -28,19 +28,26 @@
       "allowBackup": false
     },
     "plugins": [
-      "expo-router",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
-        }
-      ],
-      "expo-sqlite",
-      "expo-web-browser"
-    ],
+  "expo-router",
+
+  "expo-sharing",
+  "expo-print",
+  "expo-file-system",
+
+  [
+    "expo-splash-screen",
+    {
+      "image": "./assets/images/splash-icon.png",
+      "imageWidth": 200,
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    }
+  ],
+
+  "expo-sqlite",
+  "expo-web-browser"
+],
+
     "web": {
       "favicon": "./assets/images/favicon.png"
     },

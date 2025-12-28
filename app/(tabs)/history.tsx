@@ -69,6 +69,11 @@ type Section = {
   data: Order[];
 };
 
+// 🔥 SAFE PDF PATH PICKER (APK + OLD DATA SAFE)
+const getPdfPath = (item: any): string | null => {
+  return item.pdfPath || item.pdfUri || null;
+};
+
 // ─── HELPERS ───────────────────────────────────────────
 const extractQNumber = (id: string) => {
   const match = id.match(/Q(\d+)$/);
@@ -151,20 +156,13 @@ const ensureFolder = async () => {
   }
 };
 
-const sharePdfFromHistory = async (finalUri: string) => {
+    const sharePdfFromHistory = async (finalUri: string) => {
   try {
-    const info = await FileSystem.getInfoAsync(finalUri);
-    if (!info.exists) {
-      Alert.alert("PDF not found");
-      return;
-    }
-
     if (!(await Sharing.isAvailableAsync())) {
       Alert.alert("Sharing not available");
       return;
     }
 
-    // 🔥 APK SAFE: same filename, but cache location
     const fileName = finalUri.split("/").pop();
     const cacheUri = FileSystem.cacheDirectory + fileName;
 
@@ -180,7 +178,7 @@ const sharePdfFromHistory = async (finalUri: string) => {
 
   } catch (e: any) {
     console.log("❌ HISTORY SHARE ERROR:", e);
-    Alert.alert("Share failed", e?.message || "Unknown error");
+    Alert.alert("Share failed");
   }
 };
 
@@ -377,60 +375,57 @@ const quotationPrint = async (item: Order) => {
   );
 
   const logoImgHtml = `
-    <img src="data:image/png;base64,${base64Logo}"
-         style="width:110px;height:auto;" />
-  `;
+  <img 
+    src="data:image/png;base64,${base64Logo}"
+    style="width:110px;height:auto;object-fit:contain;" 
+  />
+`;
 
-  /* -------- FINAL HTML (SAME AS index.tsx) -------- */
-  const html = `
+    const html = `
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8" />
-<style>
-  @page { size: A4; margin: 20mm 15mm; }
-  body {
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 18px;
-    color: #222;
-    line-height: 1.6;
-  }
-  .hr { border-top: 3px dashed #ff0000; margin: 10px 0; }
-</style>
+  <meta charset="utf-8" />
+  <style>
+    @page { size: A4; margin: 20mm 15mm 25mm 15mm; }
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 18px; color: #222; line-height: 1.6; margin: 0; padding: 0; }
+    .hr { border-top: 3px dashed #ff0000; margin: 10px 0; }
+    .info strong { display: inline-block; width: 160px; font-weight: 600; }
+  </style>
 </head>
-
 <body>
-  <div style="display:flex;justify-content:space-between;align-items:center;">
-    <div></div>
-
-    <div style="text-align:center;">
-      <h1 style="font-size:46px;color:#d40000;font-weight:900;letter-spacing:3px;margin:0;">
-        B.B.N
-      </h1>
-      <p style="font-size:20px;font-weight:bold;">CATERERS | SWEETS | NAMKEEN | SNACKS</p>
-      <p style="font-size:18px;">PURE VEGETARIAN | INDOOR & OUTDOOR CATERING</p>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+    <div style="width:110px;"></div>
+    <div style="text-align:center;flex:1;">
+      <h1 style="
+  font-size:46px;
+  color:#d40000;
+  font-weight:900;
+  letter-spacing:3px;
+  margin:0;
+">
+  B.B.N
+</h1>
+      <p style="margin:6px 0;font-size:20px;font-weight:bold;">CATERERS | SWEETS | NAMKEEN | SNACKS</p>
+      <p style="margin:6px 0;font-size:18px;">PURE VEGETARIAN | INDOOR & OUTDOOR CATERING</p>
     </div>
-
     <div>${logoImgHtml}</div>
   </div>
 
   <div class="hr"></div>
 
   <p style="text-align:center;font-size:16px;">
-    27, Channamal Park, East Punjabi Bagh, New Delhi-26<br/>
+    27, Channamal Park, East Punjabi Bagh, Near Ashoka Park Metro Station, New Delhi-26 <br/>
     Phone: 9250928676 | 9540505607
   </p>
 
   <div style="margin-top:30px;">
-    <div style="display:flex;justify-content:space-between;font-size:19px;">
-      <div><strong>Client Name:</strong> ${item.clientName}</div>
-      <div><strong>Mobile:</strong> ${item.mobile}</div>
-    </div>
-
-    <div style="margin-top:10px;">
-      <strong>Event Location:</strong> ${item.address}
-    </div>
+  <div style="display:flex;justify-content:space-between;font-size:19px;margin-bottom:16px;">
+    <div><strong>Client Name:</strong> ${item.clientName || "Client"}</div>
+    <div><strong>Mobile:</strong> ${item.mobile}</div>
   </div>
+  <div class="info"><strong>Event Location:</strong> ${item.address}</div>
+</div>
 
   <div style="margin-top:30px;">
     ${menuHTML}
@@ -438,23 +433,35 @@ const quotationPrint = async (item: Order) => {
 
   <div style="margin-top:40px;font-size:19px;">
     <p>
-      We'll be glad to cater you for
-      <strong>Rs. ${Number(item.quotationAmount).toLocaleString("en-IN")}</strong>
-    </p>
+  For the menu provided by you,<br/>
+  We'll be glad to cater you for
+  <strong>
+    Rs. ${parseFloat(item.quotationAmount).toLocaleString("en-IN")}
+    (includes all hidden costs)
+  </strong>
+</p>
+
   </div>
 
-  <p>Regards,<br/><strong>B.B.N CATERERS</strong></p>
-  
+  <div style="margin-top:30px;font-size:19px;">
+    <p>Thank you</p>
+    <p>Regards,<br/><strong>B.B.N CATERERS</strong></p>
+  </div>
+
+  <div style="text-align:center;font-style:italic;font-size:15px;color:#555;margin-top:40px;">
+    <p>WE LOOK FORWARD TO SERVE YOU FOR MANY MORE YEARS TO COME ...</p>
+  </div>
 </body>
 </html>
 `;
 
   const { uri } = await Print.printToFileAsync({ html });
-  const finalUri = `${BBN_DIR}${item.id}.pdf`;
+  const finalUri = `${BBN_DIR}${item.id}_history.pdf`;
 
-  await FileSystem.copyAsync({ from: uri, to: finalUri });
+await FileSystem.copyAsync({ from: uri, to: finalUri });
 
-  await sharePdfFromHistory(finalUri);
+await sharePdfFromHistory(finalUri);
+
 };
 
 // 🔥 SORT BY QUOTATION NUMBER (DESC)
@@ -594,8 +601,9 @@ export default function HistoryScreen() {
           <View style={styles.rowBetween}>
             <View>
               <Text variant="titleMedium">
-                {item.clientName}
-              </Text>
+  {item.clientName || "Unnamed Client"}
+</Text>
+
               <Text style={styles.subText}>
                 Quotation ID: {item.id}
               </Text>
@@ -646,7 +654,10 @@ export default function HistoryScreen() {
 
   <IconButton
   icon="share-variant"
-  onPress={() => quotationPrint(item)}
+  onPress={async () => {
+    // 🔥 ALWAYS regenerate fresh PDF (APK SAFE)
+    await quotationPrint(item);
+  }}
 />
 
   <IconButton

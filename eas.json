@@ -11,10 +11,10 @@
       }
     },
     "production": {
-      "releaseChannel": "production",
-      "android": {
-        "buildType": "app-bundle"
-      }
-    }
+  "releaseChannel": "production",
+  "android": {
+    "buildType": "apk"
+  }
+}
   }
 }
