@@ -6,6 +6,7 @@ import React, { useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Asset } from "expo-asset";
 import * as FileSystem from "expo-file-system/legacy";
+import * as FS from "expo-file-system"; // ONLY for contentUri
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Platform } from "react-native";
@@ -167,10 +168,12 @@ const shareFinalPdf = async (finalUri: string) => {
       to: cacheUri,
     });
 
-    await Sharing.shareAsync(cacheUri, {
-      mimeType: "application/pdf",
-      dialogTitle: "Share Quotation PDF",
-    });
+    const contentUri = await FS.getContentUriAsync(cacheUri);
+
+await Sharing.shareAsync(contentUri, {
+  mimeType: "application/pdf",
+  dialogTitle: "Share Quotation PDF",
+});
 
   } catch (e: any) {
     console.log("❌ SHARE ERROR:", e);
@@ -583,9 +586,17 @@ const logoImgHtml = `
 
     await ensureFolder();
 
-console.log("🧪 PRINT START");
-const { uri: tempUri } = await Print.printToFileAsync({ html });
-console.log("🧪 PRINT END:", tempUri);
+let tempUri: string;
+
+try {
+  console.log("🧪 PRINT START");
+  const res = await Print.printToFileAsync({ html });
+  tempUri = res.uri;
+  console.log("🧪 PRINT END:", tempUri);
+} catch (err) {
+  console.log("❌ PRINT FAILED (APK):", err);
+  throw err; // THIS is important
+}
 
 const finalUri = `${BBN_DIR}${quotationId}.pdf`;
 await FileSystem.copyAsync({ from: tempUri, to: finalUri });

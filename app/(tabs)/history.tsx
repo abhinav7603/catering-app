@@ -15,6 +15,7 @@ import * as Sharing from "expo-sharing";
 
 import * as Print from "expo-print";
 import * as FileSystem from "expo-file-system/legacy";
+import * as FS from "expo-file-system"; // ONLY for contentUri
 
 import { Asset } from "expo-asset";
 import bbnLogo from "../../assets/bbn_logo.png";
@@ -295,9 +296,10 @@ if (!(await Sharing.isAvailableAsync())) {
   return;
 }
 
-await Sharing.shareAsync(shareUri, {
+const contentUri = await FS.getContentUriAsync(shareUri);
+
+await Sharing.shareAsync(contentUri, {
   mimeType: "application/pdf",
-  dialogTitle: "Share Quotation PDF",
 });
 
 // 🔥 EXTRACT NUMBER FROM "...Q001"
@@ -472,7 +474,9 @@ if (!(await Sharing.isAvailableAsync())) {
   return;
 }
 
-await Sharing.shareAsync(cacheUri, {
+const contentUri = await FS.getContentUriAsync(cacheUri);
+
+await Sharing.shareAsync(contentUri, {
   mimeType: "application/pdf",
   dialogTitle: "Share Quotation PDF",
 });
@@ -596,6 +600,7 @@ export default function HistoryScreen() {
     ]
   );
 };
+
 
   // ─── UI ─────────────────────────────────────────────
 
