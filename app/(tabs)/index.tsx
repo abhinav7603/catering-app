@@ -185,7 +185,8 @@ export default function OrderFormScreen() {
   const [clientName, setClientName] = useState<string>("");
   const [mobile, setMobile] = useState<string>("");
   const [address, setAddress] = useState<string>("");
-  const [isSharing, setIsSharing] = useState(false);
+  const pdfLock = useRef(false);
+  const [pdfBusy, setPdfBusy] = useState(false); // ✅ ADD THIS
 
   const [activeDateBlock, setActiveDateBlock] = useState<string | null>(null);
   const [activeTimeBlock, setActiveTimeBlock] = useState<string | null>(null);
@@ -582,7 +583,9 @@ const logoImgHtml = `
 
     await ensureFolder();
 
-    const { uri: tempUri } = await Print.printToFileAsync({ html });
+console.log("🧪 PRINT START");
+const { uri: tempUri } = await Print.printToFileAsync({ html });
+console.log("🧪 PRINT END:", tempUri);
 
 const finalUri = `${BBN_DIR}${quotationId}.pdf`;
 await FileSystem.copyAsync({ from: tempUri, to: finalUri });
@@ -647,36 +650,36 @@ console.log("ORDERS IN STORAGE = ", debug);
   };
 
   const sendPDFOnly = async () => {
-  if (isSharing) return;
-  setIsSharing(true);
+  if (pdfLock.current || pdfBusy) return;
+
+  pdfLock.current = true;
+  setPdfBusy(true);
 
   let nextNo: number;
 
   try {
-    // 1️⃣ ONLY cloud call here
     nextNo = await getNextQuotationNumber();
   } catch (e) {
-    console.log("❌ Q NO ERROR:", e);
-    setSnackbarMessage("Unable to fetch quotation number. Check internet.");
+    setSnackbarMessage("Unable to fetch quotation number");
     setSnackbarVisible(true);
-    setIsSharing(false);
+    pdfLock.current = false;
+    setPdfBusy(false);
     return;
   }
 
   try {
-    // 2️⃣ PDF generation (DEVICE ONLY)
     const pdfPath = await generateAndSavePDF(nextNo);
-    if (!pdfPath) return;
+    if (!pdfPath) throw new Error("PDF path missing");
 
-    // 3️⃣ Share
     await shareFinalPdf(pdfPath);
 
   } catch (e) {
-    console.log("❌ PDF / SHARE ERROR:", e);
+    console.log("❌ PDF ERROR:", e);
     setSnackbarMessage("PDF generation failed");
     setSnackbarVisible(true);
   } finally {
-    setIsSharing(false);
+    pdfLock.current = false;
+    setPdfBusy(false);
   }
 };
 
@@ -1166,9 +1169,18 @@ hr {
             Send Message
           </Button>
 
-          <Button mode="contained" style={[styles.btn, { backgroundColor: "#007BFF" }]} onPress={sendPDFOnly}>
-            Send PDF
-          </Button>
+          <Button
+  mode="contained"
+  disabled={pdfBusy}
+  style={[
+  styles.btn,
+  { backgroundColor: pdfBusy ? "#999" : "#007BFF" }
+]}
+ 
+  onPress={sendPDFOnly}
+>
+  Send PDF
+</Button>
 
           <Button mode="contained" style={[styles.btn, { backgroundColor: "#333" }]} onPress={WorkshopPrint}>
             Workshop Print

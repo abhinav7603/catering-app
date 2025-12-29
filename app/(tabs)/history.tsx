@@ -33,6 +33,8 @@ import {
   deleteOrderFromCloud,
 } from "../../services/cloud";
 
+const shareLock = { busy: false };
+
 // ─── ENABLE ANDROID ANIMATION ───────────────────────────
 
 if (
@@ -69,10 +71,6 @@ type Section = {
   data: Order[];
 };
 
-// 🔥 SAFE PDF PATH PICKER (APK + OLD DATA SAFE)
-const getPdfPath = (item: any): string | null => {
-  return item.pdfPath || item.pdfUri || null;
-};
 
 // ─── HELPERS ───────────────────────────────────────────
 const extractQNumber = (id: string) => {
@@ -156,31 +154,6 @@ const ensureFolder = async () => {
   }
 };
 
-    const sharePdfFromHistory = async (finalUri: string) => {
-  try {
-    if (!(await Sharing.isAvailableAsync())) {
-      Alert.alert("Sharing not available");
-      return;
-    }
-
-    const fileName = finalUri.split("/").pop();
-    const cacheUri = FileSystem.cacheDirectory + fileName;
-
-    await FileSystem.copyAsync({
-      from: finalUri,
-      to: cacheUri,
-    });
-
-    await Sharing.shareAsync(cacheUri, {
-      mimeType: "application/pdf",
-      dialogTitle: "Share Quotation PDF",
-    });
-
-  } catch (e: any) {
-    console.log("❌ HISTORY SHARE ERROR:", e);
-    Alert.alert("Share failed");
-  }
-};
 
 // 🔥 MAIN WORKSHOP PRINT (SAFE)
 const workshopPrint = async (item: Order) => {
@@ -303,16 +276,31 @@ ${menuHTML}
 
   await ensureFolder();
   const { uri } = await Print.printToFileAsync({ html });
-  const finalUri = `${BBN_DIR}${item.id}_workshop.pdf`;
+  const fileName = `${item.id}_workshop.pdf`;
+const shareUri = FileSystem.cacheDirectory + fileName;
 
-  await FileSystem.copyAsync({ from: uri, to: finalUri });
-  await sharePdfFromHistory(finalUri);
-};
+// delete if already exists (APK safe)
+const info = await FileSystem.getInfoAsync(shareUri);
+if (info.exists) {
+  await FileSystem.deleteAsync(shareUri);
+}
+
+await FileSystem.moveAsync({
+  from: uri,
+  to: shareUri,
+});
+
+if (!(await Sharing.isAvailableAsync())) {
+  Alert.alert("Sharing not available");
+  return;
+}
+
+await Sharing.shareAsync(shareUri, {
+  mimeType: "application/pdf",
+  dialogTitle: "Share Quotation PDF",
+});
 
 // 🔥 EXTRACT NUMBER FROM "...Q001"
-const extractQuotationNumber = (id: string): number => {
-  const match = id.match(/Q(\d+)$/);
-  return match ? Number(match[1]) : 0;
 };
 
 const quotationPrint = async (item: Order) => {
@@ -324,17 +312,25 @@ const quotationPrint = async (item: Order) => {
   for (let i = 0; i < item.orderBlocks.length; i++) {
     const b = item.orderBlocks[i];
 
-    const date = b.date
-      ? new Date(b.date).toLocaleDateString("en-GB")
-      : "";
+    const safeDate = b.date
+  ? new Date(b.date as any)
+  : null;
 
-    const time = b.time
-      ? new Date(b.time).toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: true,
-        })
-      : "";
+const date = safeDate
+  ? safeDate.toLocaleDateString("en-GB")
+  : "";
+
+const safeTime = b.time
+  ? new Date(b.time as any)
+  : null;
+
+const time = safeTime
+  ? safeTime.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    })
+  : "";
 
     menuHTML += `
       <div style="margin-bottom:8px;">
@@ -456,11 +452,30 @@ const quotationPrint = async (item: Order) => {
 `;
 
   const { uri } = await Print.printToFileAsync({ html });
-  const finalUri = `${BBN_DIR}${item.id}_history.pdf`;
+  const fileName = `${item.id}_history.pdf`;
+const cacheUri = FileSystem.cacheDirectory + fileName;
 
-await FileSystem.copyAsync({ from: uri, to: finalUri });
+// delete if exists
+const info = await FileSystem.getInfoAsync(cacheUri);
+if (info.exists) {
+  await FileSystem.deleteAsync(cacheUri);
+}
 
-await sharePdfFromHistory(finalUri);
+// move temp pdf → cache
+await FileSystem.moveAsync({
+  from: uri,
+  to: cacheUri,
+});
+
+if (!(await Sharing.isAvailableAsync())) {
+  Alert.alert("Sharing not available on this device");
+  return;
+}
+
+await Sharing.shareAsync(cacheUri, {
+  mimeType: "application/pdf",
+  dialogTitle: "Share Quotation PDF",
+});
 
 };
 
@@ -468,8 +483,8 @@ await sharePdfFromHistory(finalUri);
 const sortByQuotationNumber = (orders: Order[]): Order[] => {
   return [...orders].sort(
     (a, b) =>
-      extractQuotationNumber(b.id) -
-      extractQuotationNumber(a.id)
+      Number(extractQNumber(b.id)) -
+      Number(extractQNumber(a.id))
   );
 };
 
@@ -540,41 +555,47 @@ export default function HistoryScreen() {
   // ─── DELETE ORDER ────────────────────────────────────
 
   const deleteOrder = (orderId: string) => {
-    Alert.alert(
-      "Delete Quotation",
-      "This will permanently delete the quotation.",
-      [
-        { text: "Cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await deleteOrderFromCloud(orderId);
+  Alert.alert(
+    "Delete Quotation",
+    "This will permanently delete the quotation.",
+    [
+      { text: "Cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            // 1️⃣ cloud first
+            await deleteOrderFromCloud(orderId);
 
-              const raw = await AsyncStorage.getItem("orders");
-              const list: Order[] = raw ? JSON.parse(raw) : [];
+            // 2️⃣ then local
+            const raw = await AsyncStorage.getItem("orders");
+            const list: Order[] = raw ? JSON.parse(raw) : [];
 
-              const updated = sortByQuotationNumber(
-                list.filter((o) => o.id !== orderId)
-              );
+            const updated = sortByQuotationNumber(
+              list.filter(o => o.id !== orderId)
+            );
 
-              await AsyncStorage.setItem(
-                "orders",
-                JSON.stringify(updated)
-              );
+            await AsyncStorage.setItem(
+              "orders",
+              JSON.stringify(updated)
+            );
 
-              setSections([
-                { title: "All Quotations", data: updated },
-              ]);
-            } catch (e) {
-              console.log("❌ DELETE ERROR:", e);
-            }
-          },
+            setSections([
+              { title: "All Quotations", data: updated },
+            ]);
+
+          } catch (e) {
+            Alert.alert(
+              "Delete failed",
+              "Cloud delete failed. Check internet."
+            );
+          }
         },
-      ]
-    );
-  };
+      },
+    ]
+  );
+};
 
   // ─── UI ─────────────────────────────────────────────
 
@@ -655,8 +676,14 @@ export default function HistoryScreen() {
   <IconButton
   icon="share-variant"
   onPress={async () => {
-    // 🔥 ALWAYS regenerate fresh PDF (APK SAFE)
-    await quotationPrint(item);
+    if (shareLock.busy) return;
+    shareLock.busy = true;
+
+    try {
+      await quotationPrint(item);
+    } finally {
+      shareLock.busy = false;
+    }
   }}
 />
 
