@@ -757,19 +757,34 @@ export default function HistoryScreen() {
     shareLock.current = true;
 
     try {
-      let path = item.pdfPath;
+      // 🔒 ALWAYS REBUILD PATH LOCALLY (APK SAFE)
+const fileName = `${item.id}.pdf`;
+let path = BBN_DIR + fileName;
 
-      // 🔒 APK SAFETY
-      if (!path.startsWith("file://")) {
-        path = "file://" + path;
-      }
+// ensure file:// for sharing
+if (!path.startsWith("file://")) {
+  path = "file://" + path;
+}
 
-      const info = await FileSystem.getInfoAsync(path);
+const info = await FileSystem.getInfoAsync(path);
 
-      if (!info.exists) {
-        Alert.alert("File missing", "PDF not found on device");
-        return;
-      }
+if (!info.exists) {
+  Alert.alert(
+    "PDF not found",
+    "This PDF is not available on this device. Do you want to regenerate it?",
+    [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Regenerate",
+        onPress: async () => {
+          await quotationPrint(item);
+        },
+      },
+    ]
+  );
+  return;
+}
+      
 
       if (!(await Sharing.isAvailableAsync())) {
         Alert.alert("Sharing not available");
