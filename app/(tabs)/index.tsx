@@ -520,10 +520,15 @@ ${
 const logoAsset = Asset.fromModule(bbnLogo);
 await logoAsset.downloadAsync();
 
-const base64Logo = await FileSystem.readAsStringAsync(
-  logoAsset.localUri!,
-  { encoding: FileSystem.EncodingType.Base64 }
-);
+const response = await fetch(logoAsset.uri);
+const blob = await response.blob();
+
+const base64Logo: string = await new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onloadend = () => resolve(reader.result as string);
+  reader.onerror = reject;
+  reader.readAsDataURL(blob);
+});
 
 const logoImgHtml = `
   <img 
