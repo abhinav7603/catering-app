@@ -516,24 +516,18 @@ ${
 
     const menuHTML = menuHTMLArray.join("");
 
-// 🔥 LOGO — BASE64 (APK + PROD SAFE)
+// ✅ APK + PROD SAFE LOGO (NO BASE64)
 const logoAsset = Asset.fromModule(bbnLogo);
 await logoAsset.downloadAsync();
 
-const response = await fetch(logoAsset.uri);
-const blob = await response.blob();
-
-const base64Logo: string = await new Promise((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onloadend = () => resolve(reader.result as string);
-  reader.onerror = reject;
-  reader.readAsDataURL(blob);
-});
+if (!logoAsset.uri) {
+  throw new Error("Logo asset not resolved");
+}
 
 const logoImgHtml = `
-  <img 
-    src="data:image/png;base64,${base64Logo}"
-    style="width:110px;height:auto;object-fit:contain;" 
+  <img
+    src="${logoAsset.uri}"
+    style="width:110px;height:auto;object-fit:contain;"
   />
 `;
 
