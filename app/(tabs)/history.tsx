@@ -105,6 +105,25 @@ const extractDateTime = (dateTime: string) => {
   return { date: dateTime, time: "" };
 };
 
+const formatDateTime = (dateTime: string) => {
+  if (!dateTime) return "";
+
+  const d = new Date(dateTime);
+  if (isNaN(d.getTime())) return dateTime; // fallback
+
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  return `${dd}/${mm}/${yy} at ${time}`;
+};
+
 // ─── WORKSHOP PRINT HELPERS (FROM index.tsx) ───────────
 
 const UNITS = [
@@ -663,9 +682,9 @@ export default function HistoryScreen() {
   {item.clientName || "Unnamed Client"}
 </Text>
 
-              <Text style={styles.subText}>
-                Quotation ID: {item.id}
-              </Text>
+              <Text style={styles.qId}>
+  Quotation ID: {item.id}
+</Text>
             </View>
 
             <IconButton
@@ -674,11 +693,31 @@ export default function HistoryScreen() {
           </View>
         </TouchableOpacity>
 
-        <Text>{item.mobile}</Text>
-        <Text>{item.address}</Text>
+        <View style={styles.infoRow}>
+  <IconButton
+    icon="phone"
+    size={16}
+    style={{ margin: 0 }}
+  />
+  <Text style={styles.infoText}>
+    {item.mobile}
+  </Text>
+</View>
+
+<View style={styles.infoRow}>
+  <IconButton
+    icon="map-marker"
+    size={16}
+    style={{ margin: 0 }}
+  />
+  <Text style={styles.infoText}>
+    {item.address}
+  </Text>
+</View>
+
         <Text style={styles.subText}>
-          {item.dateTime}
-        </Text>
+  {formatDateTime(item.dateTime)}
+</Text>
 
         {expanded && (
           <View>
@@ -714,17 +753,40 @@ export default function HistoryScreen() {
   <IconButton
   icon="share-variant"
   onPress={async () => {
-  if (shareLock.current) return;
-  shareLock.current = true;
+    if (shareLock.current) return;
+    shareLock.current = true;
 
-  try {
-    await Sharing.shareAsync(item.pdfPath, {
-  mimeType: "application/pdf",
-});
-  } finally {
-    shareLock.current = false;
-  }
-}}
+    try {
+      let path = item.pdfPath;
+
+      // 🔒 APK SAFETY
+      if (!path.startsWith("file://")) {
+        path = "file://" + path;
+      }
+
+      const info = await FileSystem.getInfoAsync(path);
+
+      if (!info.exists) {
+        Alert.alert("File missing", "PDF not found on device");
+        return;
+      }
+
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert("Sharing not available");
+        return;
+      }
+
+      await Sharing.shareAsync(path, {
+        mimeType: "application/pdf",
+        dialogTitle: "Share Quotation PDF",
+        UTI: "com.adobe.pdf",
+      });
+    } catch (e) {
+      Alert.alert("Share failed", "Unable to share PDF");
+    } finally {
+      shareLock.current = false;
+    }
+  }}
 />
 
   <IconButton
@@ -765,9 +827,10 @@ const styles = StyleSheet.create({
     marginVertical: 6,
   },
   card: {
-    marginBottom: 10,
-    padding: 10,
-  },
+  marginBottom: 6,
+  paddingVertical: 8,
+  paddingHorizontal: 10,
+},
   rowBetween: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -781,8 +844,9 @@ const styles = StyleSheet.create({
     color: "#666",
   },
   block: {
-    marginBottom: 8,
-  },
+  marginBottom: 4,
+},
+
   blockTitle: {
     fontWeight: "600",
   },
@@ -790,4 +854,22 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
     color: "#555",
   },
+
+  infoRow: {
+  flexDirection: "row",
+  alignItems: "center",
+  marginTop: 2,
+},
+
+infoText: {
+  fontSize: 14,
+  color: "#444444ff",
+},
+
+qId: {
+  fontSize: 14,
+  fontWeight: "600",
+  color: "#222",
+  marginTop: 2,
+},
 });

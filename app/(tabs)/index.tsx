@@ -520,13 +520,19 @@ ${
 const logoAsset = Asset.fromModule(bbnLogo);
 await logoAsset.downloadAsync();
 
-if (!logoAsset.localUri) {
-  throw new Error("Logo asset not available");
-}
+const response = await fetch(logoAsset.localUri!);
+const blob = await response.blob();
+
+const base64Logo: string = await new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onloadend = () => resolve(reader.result as string);
+  reader.onerror = reject;
+  reader.readAsDataURL(blob);
+});
 
 const logoImgHtml = `
   <img 
-    src="${logoAsset.localUri}"
+    src="${base64Logo}"
     style="width:110px;height:auto;object-fit:contain;" 
   />
 `;
@@ -628,36 +634,6 @@ const dateTime =
     .replace(/\u202F/g, " ")
     .replace(/\u00A0/g, " ")}`;
 
-    const order = {
-  id: quotationId,   // ⭐ GLOBAL + CLIENT FORMAT
-  clientName,
-  mobile,
-  address,
-  dateTime,
-  orderBlocks,
-  quotationAmount,
-  pdfPath: finalUri, 
-};
-    
-try {
-  await saveOrderToCloud(order);
-
-  const stored = await AsyncStorage.getItem("orders");
-  const list = stored ? JSON.parse(stored) : [];
-  list.push(order);
-  await AsyncStorage.setItem("orders", JSON.stringify(list));
-
-  await saveClient();
-} catch (e) {
-  console.log("❌ Cloud save failed, quotation NOT finalized", e);
-  setSnackbarMessage("Internet issue. Quotation not saved.");
-  setSnackbarVisible(true);
-  return null;
-}
-
-const debug = await AsyncStorage.getItem("orders");
-console.log("ORDERS IN STORAGE = ", debug);
-
     return {
   pdfPath: finalUri,
   quotationId,
@@ -717,6 +693,31 @@ console.log("ORDERS IN STORAGE = ", debug);
       from: result.pdfPath,
       to: newPdfPath,
     });
+
+    const finalOrder = {
+  id: finalQuotationId,          // ✅ FINAL ID (Qxxx)
+  clientName,
+  mobile,
+  address,
+ dateTime: new Date().toISOString(),
+  orderBlocks,
+  quotationAmount,
+  pdfPath: newPdfPath,
+  paymentStatus: "UNPAID",
+  paidAmount: 0,
+  pendingAmount: Number(quotationAmount),
+};
+
+// 🔥 SAVE TO CLOUD
+await saveOrderToCloud(finalOrder);
+
+// 🔥 SAVE TO LOCAL (history)
+const stored = await AsyncStorage.getItem("orders");
+const list = stored ? JSON.parse(stored) : [];
+list.push(finalOrder);
+await AsyncStorage.setItem("orders", JSON.stringify(list));
+
+await saveClient();
 
     // 🔒 LOCK
     setLastSignature(currentSignature);
