@@ -776,9 +776,19 @@ if (!info.exists) {
       { text: "Cancel", style: "cancel" },
       {
         text: "Regenerate",
-        onPress: async () => {
-          await quotationPrint(item);
-        },
+        onPress: () => {
+  // 🔥 unlock manually
+  shareLock.current = false;
+
+  // thoda delay taaki Alert properly close ho
+  setTimeout(async () => {
+    try {
+      await quotationPrint(item);
+    } catch (e) {
+      Alert.alert("Error", "Failed to regenerate PDF");
+    }
+  }, 300);
+},
       },
     ]
   );

@@ -517,16 +517,9 @@ ${
     const menuHTML = menuHTMLArray.join("");
 
 // ✅ APK + PROD SAFE LOGO (NO BASE64)
-const logoAsset = Asset.fromModule(bbnLogo);
-await logoAsset.downloadAsync();
-
-if (!logoAsset.uri) {
-  throw new Error("Logo asset not resolved");
-}
-
 const logoImgHtml = `
   <img
-    src="${logoAsset.uri}"
+    src="https://raw.githubusercontent.com/abhinav7603/catering-app/main/assets/bbn_logo.png"
     style="width:110px;height:auto;object-fit:contain;"
   />
 `;
