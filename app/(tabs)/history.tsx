@@ -16,9 +16,6 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import * as Print from "expo-print";
 
-import { Asset } from "expo-asset";
-import bbnLogo from "../../assets/bbn_logo.png";
-
 import {
   Card,
   Divider,
@@ -73,9 +70,6 @@ type Section = {
 };
 
 const BBN_DIR = FileSystem.documentDirectory + "BBN_Quotations/";
-
-const LOGO_CACHE_PATH =
-  FileSystem.documentDirectory + "bbn_logo_base64.txt";
 
 // ─── HELPERS ───────────────────────────────────────────
 const extractQNumber = (id: string) => {
@@ -334,37 +328,6 @@ await Sharing.shareAsync(newPath, {
 // 🔥 EXTRACT NUMBER FROM "...Q001"
 };
 
-const getCachedLogoBase64 = async (): Promise<string | null> => {
-  try {
-    // 1️⃣ Agar pehle se cache hai → use it
-    const info = await FileSystem.getInfoAsync(LOGO_CACHE_PATH);
-    if (info.exists) {
-      return await FileSystem.readAsStringAsync(LOGO_CACHE_PATH);
-    }
-
-    // 2️⃣ First time → asset se base64 banao
-    const asset = Asset.fromModule(bbnLogo);
-    await asset.downloadAsync();
-
-    const base64 = await FileSystem.readAsStringAsync(
-      asset.localUri!,
-      { encoding: FileSystem.EncodingType.Base64 }
-    );
-
-    // 3️⃣ Cache save karo
-    await FileSystem.writeAsStringAsync(
-      LOGO_CACHE_PATH,
-      base64,
-      { encoding: FileSystem.EncodingType.UTF8 }
-    );
-
-    return base64;
-  } catch (e) {
-    console.log("❌ Logo cache failed:", e);
-    return null;
-  }
-};
-
 const quotationPrint = async (item: Order) => {
 
   /* -------- MENU HTML (NO TRANSLATION) -------- */
@@ -422,17 +385,13 @@ const time = safeTime
     `;
   }
 
-  // ===== LOGO BASE64 (QUOTATION PDF) =====
-const quotationBase64Logo = await getCachedLogoBase64();
+  const quotationLogoImgHtml = `
+  <img
+    src="https://raw.githubusercontent.com/abhinav7603/catering-app/main/assets/bbn_logo.png"
+    style="width:110px;height:auto;object-fit:contain;"
+  />
+`;
 
-const quotationLogoImgHtml = quotationBase64Logo
-  ? `
-    <img
-      src="data:image/png;base64,${quotationBase64Logo}"
-      style="width:110px;height:auto;object-fit:contain;"
-    />
-  `
-  : "";
 
     const html = `
 <!DOCTYPE html>
