@@ -718,7 +718,9 @@ export default function HistoryScreen() {
   shareLock.current = true;
 
   try {
-    await quotationPrint(item);
+    await Sharing.shareAsync(item.pdfPath, {
+  mimeType: "application/pdf",
+});
   } finally {
     shareLock.current = false;
   }

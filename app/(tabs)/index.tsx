@@ -171,6 +171,9 @@ function mergeOrders(localOrders: any[], cloudOrders: any[]) {
 }
 
 const shareFinalPdf = async (finalUri: string) => {
+  if (!finalUri.startsWith("file://")) {
+  throw new Error("Not a file URI");
+}
   try {
     const info = await FileSystem.getInfoAsync(finalUri);
     if (!info.exists) {
@@ -620,7 +623,10 @@ try {
 }
 
 const finalUri = `${BBN_DIR}${quotationId}.pdf`;
-await FileSystem.copyAsync({ from: tempUri, to: finalUri });
+await FileSystem.moveAsync({
+  from: tempUri,
+  to: finalUri,
+});
 
 const dateTime =
   `${now.toLocaleDateString("en-GB")} at ` +
@@ -699,31 +705,28 @@ console.log("ORDERS IN STORAGE = ", debug);
       orderBlocks
     );
 
-    let quotationNo: number;
-    let quotationIdToUse: string;
-
-    // 🔁 SAME DATA → SAME Q NUMBER
+    // 🔁 SAME DATA → SAME PDF (NO NEW Q)
     if (lastSignature === currentSignature && lockedQuotationId) {
-      setOrderId(lockedQuotationId);
-      const pdfPath = `${BBN_DIR}${lockedQuotationId}.pdf`;
-      await shareFinalPdf(pdfPath);
+      const existingPdfPath = `${BBN_DIR}${lockedQuotationId}.pdf`;
+
+      await shareFinalPdf(existingPdfPath);
       return;
     }
 
     // 🆕 DATA CHANGED → NEW Q NUMBER
-    quotationNo = await getNextQuotationNumber();
+    const quotationNo = await getNextQuotationNumber();
 
     const result = await generateAndSavePDF(quotationNo);
-if (!result) throw new Error("PDF generation failed");
+    if (!result) throw new Error("PDF generation failed");
 
-const { pdfPath, quotationId } = result;
+    const { pdfPath, quotationId } = result;
 
-// 🔒 LOCK THIS VERSION (CORRECT ID)
-setLastSignature(currentSignature);
-setLockedQuotationId(quotationId);
-setOrderId(quotationId);
+    // 🔒 LOCK THIS VERSION
+    setLastSignature(currentSignature);
+    setLockedQuotationId(quotationId);
+    setOrderId(quotationId);
 
-await shareFinalPdf(pdfPath);
+    await shareFinalPdf(pdfPath);
 
   } catch (e) {
     console.log("❌ PDF ERROR:", e);
@@ -1055,7 +1058,10 @@ hr {
     const { uri } = await Print.printToFileAsync({ html });
     const finalUri = `${BBN_DIR}${orderId}_workshop.pdf`;
 
-    await FileSystem.copyAsync({ from: uri, to: finalUri });
+    await FileSystem.moveAsync({
+  from: uri,
+  to: finalUri,
+});
     return finalUri;
   };
 
