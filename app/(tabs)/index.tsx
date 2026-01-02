@@ -8,7 +8,6 @@ import { Asset } from "expo-asset";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import { Platform } from "react-native";
 import { Alert } from "react-native";
 
 import {
@@ -391,7 +390,7 @@ useEffect(() => {
 
   // ─── PDF CREATION ─────────────────────────────────────────────
 
-  const generateAndSavePDF = async (quotationNo: number) => {
+  const generateAndSavePDF = async () => {
     const now = new Date();
 
 const dd = String(now.getDate()).padStart(2, "0");
@@ -404,9 +403,7 @@ const dateStamp = `${dd}${mm}${yy}`;
   .toUpperCase()
   .replace(/\s+/g, "")
   .replace(/[^A-Z0-9]/g, "")
-}${dateStamp}Q${String(quotationNo).padStart(3, "0")}`;
-
-setOrderId(quotationId); // 🔥 IMPORTANT
+}${dateStamp}`;
 
 if (!quotationId) {
   setSnackbarMessage("Quotation ID not ready");
@@ -527,14 +524,9 @@ if (!logoAsset.localUri) {
   throw new Error("Logo asset not available");
 }
 
-const base64Logo = await FileSystem.readAsStringAsync(
-  logoAsset.localUri,
-  { encoding: FileSystem.EncodingType.Base64 }
-);
-
 const logoImgHtml = `
   <img 
-    src="data:image/png;base64,${base64Logo}"
+    src="${logoAsset.localUri}"
     style="width:110px;height:auto;object-fit:contain;" 
   />
 `;
@@ -623,10 +615,7 @@ try {
 }
 
 const finalUri = `${BBN_DIR}${quotationId}.pdf`;
-await FileSystem.moveAsync({
-  from: tempUri,
-  to: finalUri,
-});
+await FileSystem.copyAsync({ from: tempUri, to: finalUri });
 
 const dateTime =
   `${now.toLocaleDateString("en-GB")} at ` +
@@ -705,38 +694,48 @@ console.log("ORDERS IN STORAGE = ", debug);
       orderBlocks
     );
 
-    // 🔁 SAME DATA → SAME PDF (NO NEW Q)
+    // 🔁 SAME DATA → SAME PDF
     if (lastSignature === currentSignature && lockedQuotationId) {
       const existingPdfPath = `${BBN_DIR}${lockedQuotationId}.pdf`;
-
       await shareFinalPdf(existingPdfPath);
       return;
     }
 
-    // 🆕 DATA CHANGED → NEW Q NUMBER
-    const quotationNo = await getNextQuotationNumber();
-
-    const result = await generateAndSavePDF(quotationNo);
+    // 🆕 GENERATE PDF
+    const result = await generateAndSavePDF();
     if (!result) throw new Error("PDF generation failed");
 
-    const { pdfPath, quotationId } = result;
+    // 🔢 COUNTER ONCE
+    const quotationNo = await getNextQuotationNumber();
 
-    // 🔒 LOCK THIS VERSION
+    const finalQuotationId =
+      `${result.quotationId}Q${String(quotationNo).padStart(3, "0")}`;
+
+    const newPdfPath = `${BBN_DIR}${finalQuotationId}.pdf`;
+
+    await FileSystem.moveAsync({
+      from: result.pdfPath,
+      to: newPdfPath,
+    });
+
+    // 🔒 LOCK
     setLastSignature(currentSignature);
-    setLockedQuotationId(quotationId);
-    setOrderId(quotationId);
+    setLockedQuotationId(finalQuotationId);
+    setOrderId(finalQuotationId);
 
-    await shareFinalPdf(pdfPath);
+    await shareFinalPdf(newPdfPath);
 
   } catch (e) {
     console.log("❌ PDF ERROR:", e);
     setSnackbarMessage("PDF generation failed");
     setSnackbarVisible(true);
+
   } finally {
     pdfLock.current = false;
     setPdfBusy(false);
   }
 };
+
 
   // ─── WORKSHOP PRINT (unchanged, formatted only) ─────────────────────────────
 
@@ -891,7 +890,7 @@ temp.push(tr);
   </div>
 
   <div class="bold">
-    Q. NO.: ${orderId.match(/Q(\d+)$/)?.[1] || ""}
+    Q. NO.: ${orderId.includes("Q") ? orderId.split("Q")[1] : ""}
   </div>
 </div>
 
