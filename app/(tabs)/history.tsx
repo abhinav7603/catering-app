@@ -12,10 +12,9 @@ import {
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Sharing from "expo-sharing";
+import * as FileSystem from "expo-file-system/legacy";
 
 import * as Print from "expo-print";
-import * as FileSystem from "expo-file-system/legacy";
-import * as FS from "expo-file-system"; // ONLY for contentUri
 
 import { Asset } from "expo-asset";
 import bbnLogo from "../../assets/bbn_logo.png";
@@ -27,6 +26,8 @@ import {
   Text,
 } from "react-native-paper";
 
+import { useRef } from "react";
+
 import { useFocusEffect } from "@react-navigation/native";
 
 import {
@@ -34,7 +35,6 @@ import {
   deleteOrderFromCloud,
 } from "../../services/cloud";
 
-const shareLock = { busy: false };
 
 // ─── ENABLE ANDROID ANIMATION ───────────────────────────
 
@@ -72,6 +72,7 @@ type Section = {
   data: Order[];
 };
 
+const BBN_DIR = FileSystem.documentDirectory + "BBN_Quotations/";
 
 // ─── HELPERS ───────────────────────────────────────────
 const extractQNumber = (id: string) => {
@@ -144,15 +145,6 @@ const smartTransliterateLine = async (line: string) => {
   }
 
   return out.join(" ");
-};
-
-const BBN_DIR = `${FileSystem.documentDirectory}BBN_Quotations/`;
-
-const ensureFolder = async () => {
-  const info = await FileSystem.getInfoAsync(BBN_DIR);
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(BBN_DIR, { intermediates: true });
-  }
 };
 
 
@@ -230,6 +222,8 @@ const workshopPrint = async (item: Order) => {
 `;
   }
 
+  // ===== LOGO BASE64 (APK + PROD SAFE) =====
+
   const html = `
 <!doctype html>
 <html>
@@ -275,38 +269,50 @@ ${menuHTML}
 </html>
 `;
 
-  await ensureFolder();
-  const { uri } = await Print.printToFileAsync({ html });
-  const fileName = `${item.id}_workshop.pdf`;
-const shareUri = FileSystem.cacheDirectory + fileName;
+const { uri } = await Print.printToFileAsync({ html });
+// 🔹 CLIENT NAME (no spaces, safe)
+const safeClientName = (item.clientName || "Client")
+  .replace(/\s+/g, "")
+  .replace(/[^a-zA-Z0-9]/g, "");
 
-// delete if already exists (APK safe)
-const info = await FileSystem.getInfoAsync(shareUri);
-if (info.exists) {
-  await FileSystem.deleteAsync(shareUri);
-}
+// 🔹 DATE → DDMMYY
+const now = new Date();
+const dd = String(now.getDate()).padStart(2, "0");
+const mm = String(now.getMonth() + 1).padStart(2, "0");
+const yy = String(now.getFullYear()).slice(-2);
 
+// 🔹 Q NUMBER
+const qNo = `Q${extractQNumber(item.id).padStart(3, "0")}`;
+
+// 🔹 FINAL FILE NAME
+const pdfName = `${safeClientName}${dd}${mm}${yy}${qNo}.pdf`;
+
+await FileSystem.makeDirectoryAsync(BBN_DIR, { intermediates: true });
+
+const newPath = BBN_DIR + pdfName;
+
+// 🔹 RENAME FILE
 await FileSystem.moveAsync({
   from: uri,
-  to: shareUri,
+  to: newPath,
 });
+
 
 if (!(await Sharing.isAvailableAsync())) {
   Alert.alert("Sharing not available");
   return;
 }
 
-const contentUri = await FS.getContentUriAsync(shareUri);
-
-await Sharing.shareAsync(contentUri, {
+await Sharing.shareAsync(newPath, {
   mimeType: "application/pdf",
+  dialogTitle: "Share Workshop PDF",
+  UTI: "com.adobe.pdf",
 });
 
 // 🔥 EXTRACT NUMBER FROM "...Q001"
 };
 
 const quotationPrint = async (item: Order) => {
-  await ensureFolder();
 
   /* -------- MENU HTML (NO TRANSLATION) -------- */
   let menuHTML = "";
@@ -363,19 +369,19 @@ const time = safeTime
     `;
   }
 
-  /* -------- LOGO (BASE64 – APK SAFE) -------- */
-  const logoAsset = Asset.fromModule(bbnLogo);
-  await logoAsset.downloadAsync();
+  // ===== LOGO BASE64 (QUOTATION PDF) =====
+const quotationLogoAsset = Asset.fromModule(bbnLogo);
+await quotationLogoAsset.downloadAsync();
 
-  const base64Logo = await FileSystem.readAsStringAsync(
-    logoAsset.localUri!,
-    { encoding: FileSystem.EncodingType.Base64 }
-  );
+const quotationBase64Logo = await FileSystem.readAsStringAsync(
+  quotationLogoAsset.localUri!,
+  { encoding: FileSystem.EncodingType.Base64 }
+);
 
-  const logoImgHtml = `
-  <img 
-    src="data:image/png;base64,${base64Logo}"
-    style="width:110px;height:auto;object-fit:contain;" 
+const quotationLogoImgHtml = `
+  <img
+    src="data:image/png;base64,${quotationBase64Logo}"
+    style="width:110px;height:auto;object-fit:contain;"
   />
 `;
 
@@ -384,6 +390,7 @@ const time = safeTime
 <html>
 <head>
   <meta charset="utf-8" />
+  <base href="file:///" />
   <style>
     @page { size: A4; margin: 20mm 15mm 25mm 15mm; }
     body { font-family: Arial, Helvetica, sans-serif; font-size: 18px; color: #222; line-height: 1.6; margin: 0; padding: 0; }
@@ -393,21 +400,33 @@ const time = safeTime
 </head>
 <body>
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-    <div style="width:110px;"></div>
-    <div style="text-align:center;flex:1;">
-      <h1 style="
-  font-size:46px;
-  color:#d40000;
-  font-weight:900;
-  letter-spacing:3px;
-  margin:0;
-">
-  B.B.N
-</h1>
-      <p style="margin:6px 0;font-size:20px;font-weight:bold;">CATERERS | SWEETS | NAMKEEN | SNACKS</p>
-      <p style="margin:6px 0;font-size:18px;">PURE VEGETARIAN | INDOOR & OUTDOOR CATERING</p>
-    </div>
-    <div>${logoImgHtml}</div>
+  <div style="width:110px;"></div>
+
+  <div style="text-align:center;flex:1;">
+    <h1 style="
+      font-size:46px;
+      color:#d40000;
+      font-weight:900;
+      letter-spacing:3px;
+      margin:0;
+    ">
+      B.B.N
+    </h1>
+
+    <p style="margin:6px 0;font-size:20px;font-weight:bold;">
+      CATERERS | SWEETS | NAMKEEN | SNACKS
+    </p>
+
+    <p style="margin:6px 0;font-size:18px;">
+      PURE VEGETARIAN | INDOOR & OUTDOOR CATERING
+    </p>
+  </div>
+
+  <div>
+    ${quotationLogoImgHtml}
+  </div>
+</div>
+
   </div>
 
   <div class="hr"></div>
@@ -454,32 +473,44 @@ const time = safeTime
 `;
 
   const { uri } = await Print.printToFileAsync({ html });
-  const fileName = `${item.id}_history.pdf`;
-const cacheUri = FileSystem.cacheDirectory + fileName;
+ // 🔹 CLIENT NAME (no spaces, safe)
+const safeClientName = (item.clientName || "Client")
+  .replace(/\s+/g, "")
+  .replace(/[^a-zA-Z0-9]/g, "");
 
-// delete if exists
-const info = await FileSystem.getInfoAsync(cacheUri);
-if (info.exists) {
-  await FileSystem.deleteAsync(cacheUri);
-}
+// 🔹 DATE → DDMMYY
+const now = new Date();
+const dd = String(now.getDate()).padStart(2, "0");
+const mm = String(now.getMonth() + 1).padStart(2, "0");
+const yy = String(now.getFullYear()).slice(-2);
 
-// move temp pdf → cache
+// 🔹 Q NUMBER
+const qNo = `Q${extractQNumber(item.id).padStart(3, "0")}`;
+
+// 🔹 FINAL FILE NAME
+const pdfName = `${safeClientName}${dd}${mm}${yy}${qNo}.pdf`;
+
+await FileSystem.makeDirectoryAsync(BBN_DIR, { intermediates: true });
+const newPath = BBN_DIR + pdfName;
+
+// 🔹 RENAME FILE
 await FileSystem.moveAsync({
   from: uri,
-  to: cacheUri,
+  to: newPath,
 });
 
+
 if (!(await Sharing.isAvailableAsync())) {
-  Alert.alert("Sharing not available on this device");
+  Alert.alert("Sharing not available");
   return;
 }
 
-const contentUri = await FS.getContentUriAsync(cacheUri);
-
-await Sharing.shareAsync(contentUri, {
+await Sharing.shareAsync(newPath, {
   mimeType: "application/pdf",
   dialogTitle: "Share Quotation PDF",
+  UTI: "com.adobe.pdf",
 });
+
 
 };
 
@@ -497,6 +528,8 @@ const sortByQuotationNumber = (orders: Order[]): Order[] => {
 export default function HistoryScreen() {
   const [sections, setSections] = useState<Section[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+   const shareLock = useRef(false);
 
   // 🔄 Reload every time screen opens
   useFocusEffect(
@@ -681,15 +714,15 @@ export default function HistoryScreen() {
   <IconButton
   icon="share-variant"
   onPress={async () => {
-    if (shareLock.busy) return;
-    shareLock.busy = true;
+  if (shareLock.current) return;
+  shareLock.current = true;
 
-    try {
-      await quotationPrint(item);
-    } finally {
-      shareLock.busy = false;
-    }
-  }}
+  try {
+    await quotationPrint(item);
+  } finally {
+    shareLock.current = false;
+  }
+}}
 />
 
   <IconButton

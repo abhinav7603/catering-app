@@ -6,7 +6,6 @@ import React, { useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Asset } from "expo-asset";
 import * as FileSystem from "expo-file-system/legacy";
-import * as FS from "expo-file-system"; // ONLY for contentUri
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Platform } from "react-native";
@@ -42,6 +41,31 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker";
 
 import bbnLogo from "../../assets/bbn_logo.png";
+
+
+// ─── QUOTATION CHANGE SIGNATURE ─────────────────────────────
+
+const getFormSignature = (
+  clientName: string,
+  mobile: string,
+  address: string,
+  quotationAmount: string,
+  orderBlocks: any[]
+) => {
+  return JSON.stringify({
+    clientName: clientName.trim(),
+    mobile: mobile.trim(),
+    address: address.trim(),
+    quotationAmount: quotationAmount.trim(),
+    orderBlocks: orderBlocks.map(b => ({
+      description: b.description.trim(),
+      notes: b.notes.trim(),
+      guests: b.guests.trim(),
+      date: b.date instanceof Date ? b.date.toISOString() : b.date,
+      time: b.time instanceof Date ? b.time.toISOString() : b.time,
+    })),
+  });
+};
 
 // ─── HINDI ONLINE TRANSLATION API (GOOGLE-LIKE) ─────────────────────────────
 
@@ -159,21 +183,12 @@ const shareFinalPdf = async (finalUri: string) => {
       return;
     }
 
-    // ✅ APK SAFE: COPY TO CACHE FIRST
-    const fileName = finalUri.split("/").pop();
-    const cacheUri = FileSystem.cacheDirectory + fileName;
-
-    await FileSystem.copyAsync({
-      from: finalUri,
-      to: cacheUri,
+    // ✅ expo-sharing ONLY supports file://
+    await Sharing.shareAsync(finalUri, {
+      mimeType: "application/pdf",
+      dialogTitle: "Share Quotation PDF",
+      UTI: "com.adobe.pdf",
     });
-
-    const contentUri = await FS.getContentUriAsync(cacheUri);
-
-await Sharing.shareAsync(contentUri, {
-  mimeType: "application/pdf",
-  dialogTitle: "Share Quotation PDF",
-});
 
   } catch (e: any) {
     console.log("❌ SHARE ERROR:", e);
@@ -190,6 +205,9 @@ export default function OrderFormScreen() {
   const [address, setAddress] = useState<string>("");
   const pdfLock = useRef(false);
   const [pdfBusy, setPdfBusy] = useState(false); // ✅ ADD THIS
+
+  const [lastSignature, setLastSignature] = useState<string | null>(null);
+const [lockedQuotationId, setLockedQuotationId] = useState<string | null>(null);
 
   const [activeDateBlock, setActiveDateBlock] = useState<string | null>(null);
   const [activeTimeBlock, setActiveTimeBlock] = useState<string | null>(null);
@@ -247,8 +265,11 @@ useEffect(() => {
     return;
   }
 
+  // 🔒 if quotation already locked, DO NOT reset
+  if (lockedQuotationId) return;
+
   setOrderId("PREVIEW");
-}, [clientName, orderBlocks]);
+}, [clientName, orderBlocks, lockedQuotationId]);
 
   // ─── HELPERS ─────────────────────────────────────────────
 
@@ -642,7 +663,10 @@ try {
 const debug = await AsyncStorage.getItem("orders");
 console.log("ORDERS IN STORAGE = ", debug);
 
-    return finalUri;
+    return {
+  pdfPath: finalUri,
+  quotationId,
+};
 
   };
 
@@ -666,23 +690,40 @@ console.log("ORDERS IN STORAGE = ", debug);
   pdfLock.current = true;
   setPdfBusy(true);
 
-  let nextNo: number;
-
   try {
-    nextNo = await getNextQuotationNumber();
-  } catch (e) {
-    setSnackbarMessage("Unable to fetch quotation number");
-    setSnackbarVisible(true);
-    pdfLock.current = false;
-    setPdfBusy(false);
-    return;
-  }
+    const currentSignature = getFormSignature(
+      clientName,
+      mobile,
+      address,
+      quotationAmount,
+      orderBlocks
+    );
 
-  try {
-    const pdfPath = await generateAndSavePDF(nextNo);
-    if (!pdfPath) throw new Error("PDF path missing");
+    let quotationNo: number;
+    let quotationIdToUse: string;
 
-    await shareFinalPdf(pdfPath);
+    // 🔁 SAME DATA → SAME Q NUMBER
+    if (lastSignature === currentSignature && lockedQuotationId) {
+      setOrderId(lockedQuotationId);
+      const pdfPath = `${BBN_DIR}${lockedQuotationId}.pdf`;
+      await shareFinalPdf(pdfPath);
+      return;
+    }
+
+    // 🆕 DATA CHANGED → NEW Q NUMBER
+    quotationNo = await getNextQuotationNumber();
+
+    const result = await generateAndSavePDF(quotationNo);
+if (!result) throw new Error("PDF generation failed");
+
+const { pdfPath, quotationId } = result;
+
+// 🔒 LOCK THIS VERSION (CORRECT ID)
+setLastSignature(currentSignature);
+setLockedQuotationId(quotationId);
+setOrderId(quotationId);
+
+await shareFinalPdf(pdfPath);
 
   } catch (e) {
     console.log("❌ PDF ERROR:", e);
